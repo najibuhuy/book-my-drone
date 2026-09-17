@@ -1,0 +1,17 @@
+# Rust
+/backend/target
+
+# Node / Bun
+/frontend/node_modules
+/frontend/dist
+*.tsbuildinfo
+bun.lockb
+
+# Env
+.env
+*.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
