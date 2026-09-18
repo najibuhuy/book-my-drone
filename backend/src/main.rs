@@ -85,7 +85,17 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
     tracing::info!("Book My Drone API listening on http://{}", config.bind_addr);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+/// Resolve when the process is asked to stop (Ctrl+C). Letting the server shut
+/// down gracefully makes it exit 0 instead of being hard-killed — which on
+/// Windows is what produced the scary `STATUS_CONTROL_C_EXIT` (0xc000013a) line.
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("shutdown signal received — stopping");
 }
