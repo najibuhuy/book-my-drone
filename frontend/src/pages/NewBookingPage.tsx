@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
-import type { Availability, BookingInput, DroneLine, DroneType } from "../types";
+import type { Availability, BookingInput } from "../types";
 import { toISO } from "../lib/date";
 import { colorFor, progressColor } from "../lib/color";
 
@@ -13,7 +13,7 @@ const emptyForm = (): BookingInput => ({
   description: "",
   progress: 0,
   pic: "",
-  drones: [{ drone_type: "", number_of_drones: 1 }],
+  drone_ids: [],
 });
 
 export default function NewBookingPage() {
@@ -22,14 +22,18 @@ export default function NewBookingPage() {
   const navigate = useNavigate();
 
   const [form, setForm] = useState<BookingInput>(emptyForm);
-  const [droneTypes, setDroneTypes] = useState<DroneType[]>([]);
   const [avail, setAvail] = useState<Availability[]>([]);
   const [availError, setAvailError] = useState(false);
+  const [hasTypes, setHasTypes] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Cascading picker: choose a type, then a specific drone.
+  const [pickType, setPickType] = useState("");
+  const [pickDroneId, setPickDroneId] = useState("");
+
   useEffect(() => {
-    api.listDroneTypes().then(setDroneTypes).catch(() => {});
+    api.listDrones().then((d) => setHasTypes(d.length > 0)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -45,15 +49,13 @@ export default function NewBookingPage() {
           description: b.description,
           progress: b.progress,
           pic: b.pic,
-          drones: b.drones.length
-            ? b.drones
-            : [{ drone_type: "", number_of_drones: 1 }],
+          drone_ids: b.drones.map((d) => d.id),
         }),
       )
       .catch((e) => setError(e instanceof Error ? e.message : "Load failed"));
   }, [id]);
 
-  // Live availability for the chosen window (excludes this booking when editing).
+  // Per-unit availability for the chosen window (excludes this booking on edit).
   useEffect(() => {
     if (form.end_date < form.start_date) return;
     let cancelled = false;
@@ -66,8 +68,6 @@ export default function NewBookingPage() {
         }
       })
       .catch(() => {
-        // Don't treat a failed lookup as "zero available" — that would silently
-        // block the form. Fall back to letting the server enforce stock.
         if (!cancelled) setAvailError(true);
       });
     return () => {
@@ -75,110 +75,73 @@ export default function NewBookingPage() {
     };
   }, [form.start_date, form.end_date, id]);
 
-  // Default the first line's type once types load (create mode).
-  useEffect(() => {
-    if (!isEdit && droneTypes.length > 0) {
-      setForm((f) => {
-        if (f.drones[0]?.drone_type) return f;
-        const drones = [...f.drones];
-        drones[0] = { ...drones[0], drone_type: droneTypes[0].name };
-        return { ...f, drones };
-      });
-    }
-  }, [droneTypes, isEdit]);
+  const selected = useMemo(() => new Set(form.drone_ids), [form.drone_ids]);
 
-  const availByType = useMemo(() => {
-    const m = new Map<string, Availability>();
-    for (const a of avail) m.set(a.drone_type, a);
+  // Resolve a selected drone id -> its code/type for the chips.
+  const availById = useMemo(() => {
+    const m = new Map<number, Availability>();
+    for (const a of avail) m.set(a.id, a);
     return m;
   }, [avail]);
 
-  // Total requested per drone type across all lines in the form.
-  const requestedByType = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const d of form.drones) {
-      if (!d.drone_type) continue;
-      m.set(d.drone_type, (m.get(d.drone_type) ?? 0) + (Number(d.number_of_drones) || 0));
-    }
-    return m;
-  }, [form.drones]);
+  // Distinct drone types (that have at least one unit).
+  const typeOptions = useMemo(() => {
+    const s = new Set(avail.map((a) => a.drone_type));
+    return [...s].sort();
+  }, [avail]);
 
-  // Types where the form requests more than is free for the window.
-  const overbooked = useMemo(() => {
-    const bad: { type: string; requested: number; available: number }[] = [];
-    for (const [type, requested] of requestedByType) {
-      const available = availByType.get(type)?.available ?? 0;
-      if (requested > available) bad.push({ type, requested, available });
-    }
-    return bad;
-  }, [requestedByType, availByType]);
+  // Units of the currently-picked type.
+  const pickUnits = useMemo(
+    () => avail.filter((a) => a.drone_type === pickType),
+    [avail, pickType],
+  );
+
+  // Default the type picker to the first type once availability loads.
+  useEffect(() => {
+    if (!pickType && typeOptions.length > 0) setPickType(typeOptions[0]);
+  }, [typeOptions, pickType]);
 
   function set<K extends keyof BookingInput>(key: K, value: BookingInput[K]) {
     setForm((f) => ({ ...f, [key]: value }));
   }
 
-  function updateLine(index: number, patch: Partial<DroneLine>) {
-    setForm((f) => ({
-      ...f,
-      drones: f.drones.map((d, i) => (i === index ? { ...d, ...patch } : d)),
-    }));
+  function toggle(droneId: number) {
+    setForm((f) => {
+      const has = f.drone_ids.includes(droneId);
+      return {
+        ...f,
+        drone_ids: has
+          ? f.drone_ids.filter((x) => x !== droneId)
+          : [...f.drone_ids, droneId],
+      };
+    });
   }
 
-  function addLine() {
-    setForm((f) => ({
-      ...f,
-      drones: [
-        ...f.drones,
-        { drone_type: droneTypes[0]?.name ?? "", number_of_drones: 1 },
-      ],
-    }));
+  function addPicked() {
+    const idNum = Number(pickDroneId);
+    if (!idNum || selected.has(idNum)) return;
+    setForm((f) => ({ ...f, drone_ids: [...f.drone_ids, idNum] }));
+    setPickDroneId("");
   }
-
-  function removeLine(index: number) {
-    setForm((f) => ({
-      ...f,
-      drones: f.drones.length > 1 ? f.drones.filter((_, i) => i !== index) : f.drones,
-    }));
-  }
-
-  const totalDrones = useMemo(
-    () => form.drones.reduce((sum, d) => sum + (Number(d.number_of_drones) || 0), 0),
-    [form.drones],
-  );
-  const droneBars = useMemo(
-    () => Array.from({ length: Math.min(totalDrones, 24) }),
-    [totalDrones],
-  );
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-
     if (form.end_date < form.start_date) {
       setError("End date must be on or after start date.");
       return;
     }
-    if (form.drones.some((d) => !d.drone_type)) {
-      setError("Every drone line needs a drone type selected.");
-      return;
-    }
-    if (!availError && overbooked.length > 0) {
-      const first = overbooked[0];
-      setError(
-        `Not enough "${first.type}" for these dates: ${first.available} free, ${first.requested} requested.`,
-      );
+    if (form.drone_ids.length === 0) {
+      setError("Select at least one drone.");
       return;
     }
     setSaving(true);
     try {
-      if (isEdit && id) {
-        await api.updateBooking(id, form);
-      } else {
-        await api.createBooking(form);
-      }
+      if (isEdit && id) await api.updateBooking(id, form);
+      else await api.createBooking(form);
       navigate("/book");
     } catch (err) {
-      // Server-side stock conflicts (409) surface here too.
+      // Server-side unit conflicts (409) surface here too.
       setError(err instanceof Error ? err.message : "Save failed");
     } finally {
       setSaving(false);
@@ -195,16 +158,16 @@ export default function NewBookingPage() {
       </div>
 
       {error && <div className="banner banner--error">{error}</div>}
-      {droneTypes.length === 0 && (
+      {!hasTypes && (
         <div className="banner banner--warn">
-          No drone types in stock yet. Add some on the{" "}
+          No drones registered yet. Add some on the{" "}
           <Link to="/stock">Stock page</Link> first.
         </div>
       )}
       {availError && (
         <div className="banner banner--warn">
           Couldn't load live availability — you can still save; the server
-          enforces stock and rejects over-booking.
+          enforces it and rejects double-booked drones.
         </div>
       )}
 
@@ -285,96 +248,90 @@ export default function NewBookingPage() {
             </div>
           </label>
 
-          {/* Drone lines — like room types on a hotel reservation */}
+          {/* Pick specific drones: choose a type, then a drone */}
           <div className="field field--full">
-            <div className="lines-header">
-              <span className="field-label">
-                Drones — {totalDrones} total across {form.drones.length} type
-                {form.drones.length === 1 ? "" : "s"}
-                <span className="muted-note">
-                  {" "}· availability shown for {form.start_date} → {form.end_date}
-                </span>
+            <span className="field-label">
+              Drones — {form.drone_ids.length} selected
+              <span className="muted-note">
+                {" "}· availability for {form.start_date} → {form.end_date}
               </span>
-              <button type="button" className="btn btn--ghost" onClick={addLine}>
-                + Add drone type
-              </button>
-            </div>
+            </span>
 
-            <div className="drone-lines">
-              {form.drones.map((line, i) => {
-                const a = line.drone_type ? availByType.get(line.drone_type) : undefined;
-                const requested = line.drone_type
-                  ? requestedByType.get(line.drone_type) ?? 0
-                  : 0;
-                const over = a !== undefined && requested > a.available;
-                return (
-                  <div className="drone-line-wrap" key={i}>
-                    <div className="drone-line">
-                      <select
-                        value={line.drone_type}
-                        onChange={(e) => updateLine(i, { drone_type: e.target.value })}
-                        required
-                      >
-                        <option value="" disabled>
-                          Select a drone type…
-                        </option>
-                        {droneTypes.map((t) => {
-                          const av = availByType.get(t.name)?.available;
-                          return (
-                            <option key={t.id} value={t.name}>
-                              {t.name}
-                              {av !== undefined ? ` — ${av} free` : ""}
-                            </option>
-                          );
-                        })}
-                      </select>
-                      <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={line.number_of_drones}
-                        onChange={(e) =>
-                          updateLine(i, {
-                            number_of_drones: Math.max(1, Number(e.target.value) || 1),
-                          })
-                        }
-                        aria-label="Number of drones"
-                        required
-                      />
+            {typeOptions.length === 0 ? (
+              <p className="detail-empty">No drones to choose from.</p>
+            ) : (
+              <div className="drone-picker">
+                <select
+                  className="picker-select"
+                  value={pickType}
+                  onChange={(e) => {
+                    setPickType(e.target.value);
+                    setPickDroneId("");
+                  }}
+                  aria-label="Drone type"
+                >
+                  {typeOptions.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  className="picker-select"
+                  value={pickDroneId}
+                  onChange={(e) => setPickDroneId(e.target.value)}
+                  aria-label="Drone"
+                >
+                  <option value="">Select a drone…</option>
+                  {pickUnits.map((u) => {
+                    const added = selected.has(u.id);
+                    const busy = !u.available;
+                    return (
+                      <option key={u.id} value={u.id} disabled={added || busy}>
+                        {u.code}
+                        {added ? " (added)" : busy ? " (booked)" : ""}
+                      </option>
+                    );
+                  })}
+                </select>
+
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={addPicked}
+                  disabled={!pickDroneId}
+                >
+                  Add
+                </button>
+              </div>
+            )}
+
+            {form.drone_ids.length > 0 && (
+              <div className="drone-tags selected-drones">
+                {form.drone_ids.map((did) => {
+                  const a = availById.get(did);
+                  return (
+                    <span
+                      key={did}
+                      className="drone-tag mono"
+                      style={{ borderColor: colorFor(a?.drone_type ?? "") }}
+                      title={a?.drone_type ?? ""}
+                    >
+                      {a?.code ?? `#${did}`}
                       <button
                         type="button"
-                        className="btn btn--danger line-remove"
-                        onClick={() => removeLine(i)}
-                        disabled={form.drones.length === 1}
-                        title={form.drones.length === 1 ? "At least one type required" : "Remove"}
+                        className="tag-x"
+                        onClick={() => toggle(did)}
+                        aria-label="Remove"
                       >
                         ✕
                       </button>
-                    </div>
-                    {line.drone_type && a && (
-                      <div className={over ? "line-hint line-hint--bad" : "line-hint"}>
-                        {over
-                          ? `Only ${a.available} free of ${a.total_quantity} for these dates — you requested ${requested}.`
-                          : `${a.available} of ${a.total_quantity} free for these dates.`}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="drone-bars" aria-hidden>
-              {droneBars.map((_, i) => (
-                <span
-                  key={i}
-                  className="drone-bar"
-                  style={{ background: colorFor(form.project_name || "drone") }}
-                />
-              ))}
-              {totalDrones > 24 && (
-                <span className="drone-bars-more">+{totalDrones - 24}</span>
-              )}
-            </div>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <label className="field field--full">
@@ -389,11 +346,7 @@ export default function NewBookingPage() {
         </div>
 
         <div className="form-actions">
-          <button
-            type="submit"
-            className="btn btn--primary"
-            disabled={saving || (!availError && overbooked.length > 0)}
-          >
+          <button type="submit" className="btn btn--primary" disabled={saving}>
             {saving ? "Saving…" : isEdit ? "Update booking" : "Create booking"}
           </button>
         </div>

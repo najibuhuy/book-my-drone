@@ -2,6 +2,7 @@ import type {
   Availability,
   Booking,
   BookingInput,
+  Drone,
   DroneType,
   DroneTypeStat,
 } from "./types";
@@ -38,34 +39,33 @@ export const api = {
   },
   getBooking: (id: string) => request<Booking>(`/bookings/${id}`),
   createBooking: (input: BookingInput) =>
-    request<Booking>("/bookings", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
+    request<Booking>("/bookings", { method: "POST", body: JSON.stringify(input) }),
   updateBooking: (id: string, input: BookingInput) =>
-    request<Booking>(`/bookings/${id}`, {
-      method: "PUT",
-      body: JSON.stringify(input),
-    }),
+    request<Booking>(`/bookings/${id}`, { method: "PUT", body: JSON.stringify(input) }),
   deleteBooking: (id: string) =>
     request<void>(`/bookings/${id}`, { method: "DELETE" }),
 
-  // Drone types + stock (Stock page)
+  // Drone types (categories)
   listDroneTypes: () => request<DroneType[]>("/drone-types"),
-  createDroneType: (name: string, total_quantity: number) =>
-    request<DroneType>("/drone-types", {
-      method: "POST",
-      body: JSON.stringify({ name, total_quantity }),
-    }),
-  updateDroneType: (id: number, name: string, total_quantity: number) =>
-    request<DroneType>(`/drone-types/${id}`, {
-      method: "PUT",
-      body: JSON.stringify({ name, total_quantity }),
-    }),
+  createDroneType: (name: string) =>
+    request<DroneType>("/drone-types", { method: "POST", body: JSON.stringify({ name }) }),
+  updateDroneType: (id: number, name: string) =>
+    request<DroneType>(`/drone-types/${id}`, { method: "PUT", body: JSON.stringify({ name }) }),
   deleteDroneType: (id: number) =>
     request<void>(`/drone-types/${id}`, { method: "DELETE" }),
 
-  // Availability for a date window (drives live feedback in the booking form)
+  // Drones (individual units with codes)
+  listDrones: () => request<Drone[]>("/drones"),
+  createDrone: (code: string, drone_type: string) =>
+    request<Drone>("/drones", { method: "POST", body: JSON.stringify({ code, drone_type }) }),
+  updateDrone: (id: number, code: string, drone_type: string) =>
+    request<Drone>(`/drones/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ code, drone_type }),
+    }),
+  deleteDrone: (id: number) => request<void>(`/drones/${id}`, { method: "DELETE" }),
+
+  // Availability (per unit) for a date window
   availability: (start: string, end: string, exclude?: string) => {
     const params = new URLSearchParams({ start, end });
     if (exclude) params.set("exclude", exclude);

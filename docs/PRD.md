@@ -5,7 +5,7 @@
 | **Product** | Book My Drone — drone booking dashboard |
 | **Status** | Implemented (v0.1) |
 | **Author** | Najib Alyasyfi (Najib.Alyasyfi@noovoleum.com) |
-| **Last updated** | 2026-09-17 |
+| **Last updated** | 2026-09-18 |
 | **Related docs** | [ARCHITECTURE.md](ARCHITECTURE.md) · [../README.md](../README.md) |
 
 ---
@@ -13,10 +13,11 @@
 ## 1. Summary
 
 Book My Drone is an internal web dashboard for scheduling drones the way a hotel
-schedules rooms. A team maintains an inventory of drones (by type), and staff
-create **bookings** that reserve one or more drones for a project over a date
-range. A calendar makes it obvious what is booked when, and the system prevents
-double-booking beyond the physical stock available for the requested dates.
+schedules rooms. A team maintains an inventory of individually-tracked drones
+(each with a unique code, grouped by type), and staff create **bookings** that
+reserve **specific drones** for a project over a date range. A calendar makes it
+obvious what is booked when — filterable by drone type and by unique code — and
+the system prevents the same drone from being double-booked on overlapping dates.
 
 ## 2. Background & problem
 
@@ -36,20 +37,22 @@ We need a lightweight tool that:
 
 ### Goals
 
-- G1 — A calendar view where any day reveals the drones booked that day.
-- G2 — A booking captures: drone type(s) + counts, project name, start/end date,
-  vendor/booked-by, description, progress %, and PIC (person in charge).
-- G3 — One booking may reserve **several drone types**, each with its own count
-  (hotel reservation with multiple room types).
-- G4 — Stock is configurable per drone type; bookings cannot exceed what is free
-  for their dates (**time-aware**, hotel-room model).
+- G1 — A calendar view where any day reveals the drones booked that day,
+  **filterable by drone type and by unique drone code**.
+- G2 — A booking captures: project name, start/end date, vendor/booked-by,
+  description, progress %, PIC (person in charge), and the **specific drones**
+  reserved.
+- G3 — Each drone is an individual unit with a **unique code**; a booking may
+  reserve several specific drones (of one or more types).
+- G4 — A drone cannot be reserved by two bookings whose dates overlap
+  (**time-aware**, hotel-room model); the same drone frees up outside a booking.
 - G5 — Everything is persisted in PostgreSQL and configurable.
 
 ### Non-goals (v0.1)
 
 - Authentication / user accounts / roles (single trusted internal network).
-- Per-drone (serial-number) tracking; stock is a count per **type**, not
-  individual airframes.
+- Per-drone maintenance tracking (flight hours, service history); drones carry a
+  code and type only.
 - Approvals / booking workflow states (draft, approved, etc.).
 - Notifications, email, calendar sync (iCal/Google).
 - Multi-tenant / multi-organization support.
@@ -66,15 +69,15 @@ We need a lightweight tool that:
 
 ## 5. Key concepts
 
-- **Drone type** — a configurable category (e.g. "DJI Mavic 3") with a
-  `total_quantity` the company owns. Managed on the **Stock** page.
-- **Booking** — a reservation for a project over `[start_date, end_date]`. Holds
-  one or more **drone lines**.
-- **Drone line** — a `(drone_type, number_of_drones)` pair inside a booking. A
-  booking's `total_drones` is the sum of its lines.
-- **Availability (time-aware)** — for a drone type and a date window, the number
-  free = `total_quantity − drones of that type in OVERLAPPING bookings`. A drone
-  booked outside a window is free inside it. This is the "hotel room" rule.
+- **Drone type** — a configurable category (e.g. "DJI Mavic 3"). Managed on the
+  **Stock** page. How many the company owns is derived from its drones.
+- **Drone (unit)** — an individual airframe with a **unique code** (e.g.
+  "MAV-001") belonging to a type. Registered on the **Stock** page.
+- **Booking** — a reservation for a project over `[start_date, end_date]` that
+  reserves a set of **specific drones**. `total_drones` is how many it holds.
+- **Availability (time-aware, per unit)** — a specific drone is free for a date
+  window if it is not reserved by any OVERLAPPING booking. A drone booked outside
+  a window is free inside it. This is the "hotel room" rule, per airframe.
 
 ## 6. Functional requirements
 
@@ -84,70 +87,72 @@ We need a lightweight tool that:
 - FR-2 Each day cell shows chips for bookings whose `[start,end]` covers that day
   (a multi-day booking appears on every day it spans).
 - FR-3 Clicking a day opens a detail panel listing that day's bookings with:
-  project, drone-type breakdown (`N× type`), total drones, dates, vendor, PIC,
-  description, and a progress bar. Each has Edit / Delete.
-- FR-4 A dashboard chart shows total drones booked per drone type.
+  project, the reserved **drone codes** (color-coded by type), total drones,
+  dates, vendor, PIC, description, and a progress bar. Each has Edit / Delete.
+- FR-4 A dashboard chart shows drones booked per drone type.
+- FR-5 **Filters**: the calendar can be filtered by **drone type** and by
+  **unique drone code** (the code list narrows to the chosen type). Only bookings
+  involving the selected type/code are shown.
 
 ### 6.2 Book (list + create/edit) — G2, G3
 
-- FR-5 A table of all bookings: project, dates, drone breakdown, total, vendor,
-  PIC, progress, and Edit / Delete actions.
-- FR-6 "New booking" opens a form; the same form edits an existing booking.
-- FR-7 The form captures: project name, vendor/booked-by, start date, end date,
-  PIC, progress (0–100 slider), description, and **one or more drone lines**
-  (add/remove rows), each a drone-type dropdown + count.
-- FR-8 The number of drones is visualized (a small bar-per-drone indicator).
-- FR-9 The form shows **live availability** for the chosen dates: each drone type
-  shows "N free", and the form warns and blocks submit when a line exceeds what's
-  free. If the availability lookup fails, the form still submits and relies on
+- FR-6 A table of all bookings: project, dates, the reserved drone codes, total,
+  vendor, PIC, progress, and Edit / Delete actions.
+- FR-7 "New booking" opens a form; the same form edits an existing booking.
+- FR-8 The form captures: project name, vendor/booked-by, start date, end date,
+  PIC, progress (0–100 slider), description, and a **selection of specific drone
+  units**.
+- FR-9 The unit picker groups available drones by type; each free unit is a
+  checkbox showing its code. Units already booked for the chosen dates are shown
+  disabled. On edit, the booking's own units are pre-selected.
+- FR-10 If the availability lookup fails, the form still submits and relies on
   the server's authoritative check (never silently blocks).
 
-### 6.3 Stock — G4, G5
+### 6.3 Stock — G5
 
-- FR-10 List drone types with: name, total owned, in-use today, free today.
-- FR-11 Add a new drone type with a starting quantity.
-- FR-12 Edit a drone type's quantity.
-- FR-13 Delete a drone type **only if no booking references it** (otherwise the
-  API returns a clear conflict).
+- FR-11 List drone types with: name, total owned (unit count), in-use today,
+  free today.
+- FR-12 Add and delete drone types (delete blocked while the type still has
+  drones).
+- FR-13 Register individual drones, each with a **unique code** and a type; list
+  and delete them (delete blocked while a drone is reserved by a booking).
 
-### 6.4 Stock enforcement — G4
+### 6.4 Booking enforcement — G4
 
-- FR-14 On booking create/update, the server verifies every requested drone type
-  has enough free during the booking's dates, counting only **overlapping**
-  bookings.
-- FR-15 If any type is short, the whole operation is rejected atomically
-  (`409 Conflict`) with a message naming the type, the available count, and the
-  requested count. No partial booking is written.
-- FR-16 The check is race-safe: concurrent bookings of the same type cannot both
-  pass and overbook (row-level locking in a transaction).
+- FR-14 On booking create/update, the server verifies every selected drone is
+  free for the booking's dates, counting only **overlapping** bookings.
+- FR-15 If any selected drone is taken, the whole operation is rejected
+  atomically (`409 Conflict`) naming the clashing drone code(s). No partial
+  booking is written.
+- FR-16 The check is race-safe: concurrent bookings of the same drone cannot both
+  succeed (the drone rows are locked `FOR UPDATE` within the transaction).
 
 ## 7. Business rules & validation
 
 - BR-1 `end_date ≥ start_date`.
 - BR-2 `progress` ∈ [0, 100].
-- BR-3 Each drone line has `number_of_drones ≥ 1`.
-- BR-4 A booking must have at least one drone line.
-- BR-5 `project_name`, `vendor_name`, and `pic` are required (non-empty).
-- BR-6 A drone type's `total_quantity ≥ 0`; names are unique.
-- BR-7 A booking may only reference drone types that exist in the catalog.
+- BR-3 A booking must reserve at least one drone.
+- BR-4 `project_name`, `vendor_name`, and `pic` are required (non-empty).
+- BR-5 Drone codes are unique; drone-type names are unique.
+- BR-6 A drone must belong to a type that exists in the catalog.
+- BR-7 A drone may be reserved by at most one booking per overlapping window.
 - BR-8 Availability is inclusive-overlap: bookings overlap when
   `A.start ≤ B.end AND A.end ≥ B.start`.
 
 ## 8. Representative user stories
 
-- US-1 *As a booker*, I open the calendar, click Sep 22, and see every drone
-  booked that day so I know what's in the field.
-- US-2 *As a booker*, I create a booking for "Harbour Mapping" reserving 2× DJI
-  Mavic 3 and 3× Autel EVO II from Sep 22–28; the form shows each type is free
-  before I save.
-- US-3 *As a booker*, I try to book 3 Mavic 3 for dates that already have 4 of 5
-  reserved and I'm blocked with "2 available, 3 requested."
-- US-4 *As a booker*, I book the same drones for a later, non-overlapping window
-  and it succeeds — the drones freed up.
-- US-5 *As a stock manager*, I add "DJI Agras T40" with quantity 5 on the Stock
-  page, and it immediately becomes selectable in the booking form.
-- US-6 *As a stock manager*, I try to delete a type still used by a booking and
-  the system stops me.
+- US-1 *As a booker*, I open the calendar and filter by code "MAV-001" to see
+  exactly when that specific drone is out and on which projects.
+- US-2 *As a booker*, I create "Harbour Mapping" from Sep 22–28 and tick the
+  specific free units (MAV-004, MAV-005, AUTEL-001); booked units are greyed out.
+- US-3 *As a booker*, I try to reserve MAV-001 on dates it's already booked and
+  I'm blocked with "Already booked: DJI Mavic 3-001."
+- US-4 *As a booker*, I reserve MAV-001 for a later, non-overlapping window and it
+  succeeds — the drone freed up.
+- US-5 *As a stock manager*, I add type "DJI Agras T40" then register units
+  AGRAS-001…005; they immediately become selectable in the booking form.
+- US-6 *As a stock manager*, I try to delete a drone that's reserved (or a type
+  that still has drones) and the system stops me.
 
 ## 9. Non-functional requirements
 
@@ -172,9 +177,9 @@ We need a lightweight tool that:
 
 - Authentication, roles, and audit trail.
 - Booking approval workflow and status lifecycle.
-- Per-airframe tracking (serial numbers, maintenance, flight hours).
-- Conflict-aware suggestions ("next free slot"), and iCal/Google Calendar export.
-- Pagination / search / filtering on the bookings list.
+- Drone maintenance records (flight hours, service history) beyond code + type.
+- Conflict-aware suggestions ("next free unit"), and iCal/Google Calendar export.
+- Pagination / search on the bookings list.
 - Notifications and reminders.
 - Code-splitting the frontend bundle; hardening CORS for public deployment.
 

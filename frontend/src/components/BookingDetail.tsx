@@ -49,7 +49,7 @@ export default function BookingDetail({ date, bookings, onDeleted }: Props) {
               <div>
                 <h3 className="booking-card-title">{b.project_name}</h3>
                 <p className="booking-card-sub">
-                  {b.drones.length} drone type{b.drones.length === 1 ? "" : "s"}
+                  {b.total_drones} drone{b.total_drones === 1 ? "" : "s"}
                 </p>
               </div>
               <span className="drone-count" title="Total drones">
@@ -58,13 +58,14 @@ export default function BookingDetail({ date, bookings, onDeleted }: Props) {
             </div>
 
             <div className="drone-tags">
-              {b.drones.map((d, i) => (
+              {b.drones.map((d) => (
                 <span
-                  key={i}
-                  className="drone-tag"
+                  key={d.id}
+                  className="drone-tag mono"
                   style={{ borderColor: colorFor(d.drone_type) }}
+                  title={d.drone_type}
                 >
-                  <b>{d.number_of_drones}×</b> {d.drone_type}
+                  {d.code}
                 </span>
               ))}
             </div>

@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -9,13 +7,12 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::models::{
-    group_lines, Availability, Booking, BookingBase, BookingInput, DroneLine, DroneLineInput,
-    DroneLineRow, DroneType, DroneTypeInput, DroneTypeStat,
+    group_booked, Availability, BookedDroneRow, Booking, BookingBase, BookingInput, Drone,
+    DroneInput, DroneType, DroneTypeInput, DroneTypeStat,
 };
 use crate::AppState;
 
-/// UUID used to mean "exclude no booking" in overlap queries (create has no id
-/// yet, and no real booking will ever carry the nil UUID).
+/// Sentinel used to mean "exclude no booking" in overlap queries.
 const NIL_UUID: Uuid = Uuid::nil();
 
 pub async fn health() -> Json<serde_json::Value> {
@@ -23,16 +20,17 @@ pub async fn health() -> Json<serde_json::Value> {
 }
 
 // ---------------------------------------------------------------------------
-// Drone types (configurable list backing the booking form dropdown)
+// Drone types (categories)
 // ---------------------------------------------------------------------------
 
-/// Base SELECT for a drone type with its `booked_today` snapshot.
-const DRONE_TYPE_SELECT: &str = "SELECT dt.id, dt.name, dt.total_quantity,
-        COALESCE((SELECT SUM(bd.number_of_drones)
-                  FROM booking_drones bd JOIN bookings b ON b.id = bd.booking_id
-                  WHERE bd.drone_type = dt.name
-                    AND b.start_date <= CURRENT_DATE AND b.end_date >= CURRENT_DATE), 0)::bigint
-            AS booked_today
+const DRONE_TYPE_SELECT: &str = "SELECT dt.id, dt.name,
+        (SELECT COUNT(*) FROM drones d WHERE d.drone_type = dt.name)::bigint AS total_units,
+        (SELECT COUNT(*)
+           FROM booking_drone_units bdu
+           JOIN drones d ON d.id = bdu.drone_id
+           JOIN bookings b ON b.id = bdu.booking_id
+          WHERE d.drone_type = dt.name
+            AND b.start_date <= CURRENT_DATE AND b.end_date >= CURRENT_DATE)::bigint AS booked_today
      FROM drone_types dt";
 
 pub async fn list_drone_types(
@@ -50,14 +48,10 @@ pub async fn create_drone_type(
 ) -> Result<(StatusCode, Json<DroneType>), AppError> {
     input.validate().map_err(AppError::Validation)?;
     let name = input.name.trim();
-    // Create-only: a duplicate name is a conflict, not a silent overwrite.
-    let id: i32 = match sqlx::query_scalar(
-        "INSERT INTO drone_types (name, total_quantity) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(name)
-    .bind(input.total_quantity)
-    .fetch_one(&state.pool)
-    .await
+    let id: i32 = match sqlx::query_scalar("INSERT INTO drone_types (name) VALUES ($1) RETURNING id")
+        .bind(name)
+        .fetch_one(&state.pool)
+        .await
     {
         Ok(id) => id,
         Err(e) if is_unique_violation(&e) => {
@@ -67,8 +61,7 @@ pub async fn create_drone_type(
         }
         Err(e) => return Err(e.into()),
     };
-    let row = fetch_drone_type(&state.pool, id).await?;
-    Ok((StatusCode::CREATED, Json(row)))
+    Ok((StatusCode::CREATED, Json(fetch_drone_type(&state.pool, id).await?)))
 }
 
 pub async fn update_drone_type(
@@ -78,39 +71,32 @@ pub async fn update_drone_type(
 ) -> Result<Json<DroneType>, AppError> {
     input.validate().map_err(AppError::Validation)?;
     let name = input.name.trim();
-    // Renaming cascades to booking_drones via the FK (ON UPDATE CASCADE), so
-    // stock accounting stays consistent. A clash with another type's name is a
-    // conflict.
-    let updated: Option<i32> = match sqlx::query_scalar(
-        "UPDATE drone_types SET name = $2, total_quantity = $3 WHERE id = $1 RETURNING id",
-    )
-    .bind(id)
-    .bind(name)
-    .bind(input.total_quantity)
-    .fetch_optional(&state.pool)
-    .await
-    {
-        Ok(o) => o,
-        Err(e) if is_unique_violation(&e) => {
-            return Err(AppError::Conflict(format!(
-                "A drone type named \"{name}\" already exists"
-            )))
-        }
-        Err(e) => return Err(e.into()),
-    };
+    // Renaming cascades to drones.drone_type via the FK (ON UPDATE CASCADE).
+    let updated: Option<i32> =
+        match sqlx::query_scalar("UPDATE drone_types SET name = $2 WHERE id = $1 RETURNING id")
+            .bind(id)
+            .bind(name)
+            .fetch_optional(&state.pool)
+            .await
+        {
+            Ok(o) => o,
+            Err(e) if is_unique_violation(&e) => {
+                return Err(AppError::Conflict(format!(
+                    "A drone type named \"{name}\" already exists"
+                )))
+            }
+            Err(e) => return Err(e.into()),
+        };
     if updated.is_none() {
         return Err(AppError::NotFound("drone type not found".into()));
     }
-    let row = fetch_drone_type(&state.pool, id).await?;
-    Ok(Json(row))
+    Ok(Json(fetch_drone_type(&state.pool, id).await?))
 }
 
 pub async fn delete_drone_type(
     State(state): State<AppState>,
     Path(id): Path<i32>,
 ) -> Result<StatusCode, AppError> {
-    // The FK (ON DELETE RESTRICT) blocks deleting a type that bookings still
-    // reference; surface that as a friendly conflict instead of a 500.
     let result = match sqlx::query("DELETE FROM drone_types WHERE id = $1")
         .bind(id)
         .execute(&state.pool)
@@ -119,7 +105,7 @@ pub async fn delete_drone_type(
         Ok(r) => r,
         Err(e) if is_fk_violation(&e) => {
             return Err(AppError::Conflict(
-                "Can't delete this drone type — it's used by existing bookings.".into(),
+                "Can't delete this type — it still has drones. Remove them first.".into(),
             ))
         }
         Err(e) => return Err(e.into()),
@@ -137,22 +123,116 @@ async fn fetch_drone_type(pool: &sqlx::PgPool, id: i32) -> Result<DroneType, sql
         .await
 }
 
-/// Postgres unique-violation (SQLSTATE 23505).
-fn is_unique_violation(e: &sqlx::Error) -> bool {
-    e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23505")
+// ---------------------------------------------------------------------------
+// Drones (individual units)
+// ---------------------------------------------------------------------------
+
+pub async fn list_drones(State(state): State<AppState>) -> Result<Json<Vec<Drone>>, AppError> {
+    let rows =
+        sqlx::query_as::<_, Drone>("SELECT id, code, drone_type FROM drones ORDER BY drone_type, code")
+            .fetch_all(&state.pool)
+            .await?;
+    Ok(Json(rows))
 }
 
-/// Postgres foreign-key-violation (SQLSTATE 23503).
-fn is_fk_violation(e: &sqlx::Error) -> bool {
-    e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23503")
+pub async fn create_drone(
+    State(state): State<AppState>,
+    Json(input): Json<DroneInput>,
+) -> Result<(StatusCode, Json<Drone>), AppError> {
+    input.validate().map_err(AppError::Validation)?;
+    let row = match sqlx::query_as::<_, Drone>(
+        "INSERT INTO drones (code, drone_type) VALUES ($1, $2) RETURNING id, code, drone_type",
+    )
+    .bind(input.code.trim())
+    .bind(input.drone_type.trim())
+    .fetch_one(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) if is_unique_violation(&e) => {
+            return Err(AppError::Conflict(format!(
+                "A drone with code \"{}\" already exists",
+                input.code.trim()
+            )))
+        }
+        Err(e) if is_fk_violation(&e) => {
+            return Err(AppError::Conflict(format!(
+                "Unknown drone type \"{}\" — add it first",
+                input.drone_type.trim()
+            )))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok((StatusCode::CREATED, Json(row)))
 }
 
-/// Per-type availability for a date window (drives live feedback in the form).
+pub async fn update_drone(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    Json(input): Json<DroneInput>,
+) -> Result<Json<Drone>, AppError> {
+    input.validate().map_err(AppError::Validation)?;
+    let row = match sqlx::query_as::<_, Drone>(
+        "UPDATE drones SET code = $2, drone_type = $3 WHERE id = $1 RETURNING id, code, drone_type",
+    )
+    .bind(id)
+    .bind(input.code.trim())
+    .bind(input.drone_type.trim())
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) if is_unique_violation(&e) => {
+            return Err(AppError::Conflict(format!(
+                "A drone with code \"{}\" already exists",
+                input.code.trim()
+            )))
+        }
+        Err(e) if is_fk_violation(&e) => {
+            return Err(AppError::Conflict(format!(
+                "Unknown drone type \"{}\"",
+                input.drone_type.trim()
+            )))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    match row {
+        Some(r) => Ok(Json(r)),
+        None => Err(AppError::NotFound("drone not found".into())),
+    }
+}
+
+pub async fn delete_drone(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+) -> Result<StatusCode, AppError> {
+    let result = match sqlx::query("DELETE FROM drones WHERE id = $1")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if is_fk_violation(&e) => {
+            return Err(AppError::Conflict(
+                "Can't delete this drone — it's reserved by a booking.".into(),
+            ))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("drone not found".into()));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Availability (per unit, for a date window)
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Deserialize)]
 pub struct AvailabilityQuery {
     pub start: NaiveDate,
     pub end: NaiveDate,
-    /// Optional booking to ignore (so editing a booking doesn't count itself).
     pub exclude: Option<Uuid>,
 }
 
@@ -164,18 +244,16 @@ pub async fn availability(
         return Err(AppError::Validation("end must be on or after start".into()));
     }
     let rows = sqlx::query_as::<_, Availability>(
-        "SELECT dt.name AS drone_type,
-                dt.total_quantity,
-                COALESCE(b.n, 0)::bigint                        AS booked,
-                (dt.total_quantity - COALESCE(b.n, 0))::bigint  AS available
-         FROM drone_types dt
-         LEFT JOIN (
-             SELECT bd.drone_type, SUM(bd.number_of_drones) AS n
-             FROM booking_drones bd JOIN bookings bk ON bk.id = bd.booking_id
-             WHERE bk.start_date <= $2 AND bk.end_date >= $1 AND bk.id <> $3
-             GROUP BY bd.drone_type
-         ) b ON b.drone_type = dt.name
-         ORDER BY dt.name",
+        "SELECT d.id, d.code, d.drone_type,
+                NOT EXISTS (
+                    SELECT 1 FROM booking_drone_units bdu
+                    JOIN bookings b ON b.id = bdu.booking_id
+                    WHERE bdu.drone_id = d.id
+                      AND b.start_date <= $2 AND b.end_date >= $1
+                      AND b.id <> $3
+                ) AS available
+         FROM drones d
+         ORDER BY d.drone_type, d.code",
     )
     .bind(q.start)
     .bind(q.end)
@@ -192,7 +270,6 @@ pub async fn availability(
 const BOOKING_COLUMNS: &str =
     "id, project_name, start_date, end_date, vendor_name, description, progress, pic, created_at, updated_at";
 
-/// Optional date-range filter. Returns bookings that overlap [start, end].
 #[derive(Debug, Deserialize)]
 pub struct BookingQuery {
     pub start: Option<NaiveDate>,
@@ -219,17 +296,18 @@ pub async fn list_bookings(
     }
 
     let ids: Vec<Uuid> = bases.iter().map(|b| b.id).collect();
-    let lines = sqlx::query_as::<_, DroneLineRow>(
-        "SELECT booking_id, drone_type, number_of_drones
-         FROM booking_drones
-         WHERE booking_id = ANY($1)
-         ORDER BY id",
+    let rows = sqlx::query_as::<_, BookedDroneRow>(
+        "SELECT bdu.booking_id, d.id, d.code, d.drone_type
+         FROM booking_drone_units bdu
+         JOIN drones d ON d.id = bdu.drone_id
+         WHERE bdu.booking_id = ANY($1)
+         ORDER BY d.drone_type, d.code",
     )
     .bind(&ids)
     .fetch_all(&state.pool)
     .await?;
 
-    let mut grouped = group_lines(lines);
+    let mut grouped = group_booked(rows);
     let bookings = bases
         .into_iter()
         .map(|b| {
@@ -237,7 +315,6 @@ pub async fn list_bookings(
             Booking::from_parts(b, drones)
         })
         .collect();
-
     Ok(Json(bookings))
 }
 
@@ -251,8 +328,7 @@ pub async fn get_booking(
     .bind(id)
     .fetch_one(&state.pool)
     .await?;
-
-    let drones = fetch_lines(&state.pool, id).await?;
+    let drones = fetch_booked_drones(&state.pool, id).await?;
     Ok(Json(Booking::from_parts(base, drones)))
 }
 
@@ -261,9 +337,9 @@ pub async fn create_booking(
     Json(input): Json<BookingInput>,
 ) -> Result<(StatusCode, Json<Booking>), AppError> {
     input.validate().map_err(AppError::Validation)?;
+    let ids = input.unique_drone_ids();
 
     let mut tx = state.pool.begin().await?;
-
     let base = sqlx::query_as::<_, BookingBase>(&format!(
         "INSERT INTO bookings
             (project_name, start_date, end_date, vendor_name, description, progress, pic)
@@ -280,9 +356,8 @@ pub async fn create_booking(
     .fetch_one(&mut *tx)
     .await?;
 
-    // Enforce stock for the booking window before committing any lines.
-    check_stock(&mut tx, base.id, input.start_date, input.end_date, &input.drones).await?;
-    let drones = insert_lines(&mut tx, base.id, &input.drones).await?;
+    reserve_units(&mut tx, base.id, input.start_date, input.end_date, &ids).await?;
+    let drones = fetch_booked_drones_tx(&mut tx, base.id).await?;
     tx.commit().await?;
 
     Ok((StatusCode::CREATED, Json(Booking::from_parts(base, drones))))
@@ -294,19 +369,13 @@ pub async fn update_booking(
     Json(input): Json<BookingInput>,
 ) -> Result<Json<Booking>, AppError> {
     input.validate().map_err(AppError::Validation)?;
+    let ids = input.unique_drone_ids();
 
     let mut tx = state.pool.begin().await?;
-
     let base = sqlx::query_as::<_, BookingBase>(&format!(
         "UPDATE bookings SET
-            project_name = $2,
-            start_date = $3,
-            end_date = $4,
-            vendor_name = $5,
-            description = $6,
-            progress = $7,
-            pic = $8,
-            updated_at = now()
+            project_name = $2, start_date = $3, end_date = $4, vendor_name = $5,
+            description = $6, progress = $7, pic = $8, updated_at = now()
          WHERE id = $1
          RETURNING {BOOKING_COLUMNS}"
     ))
@@ -321,17 +390,14 @@ pub async fn update_booking(
     .fetch_one(&mut *tx)
     .await?;
 
-    // Replace all drone lines with the submitted set. Old lines are removed
-    // first, then availability is re-checked (excluding this booking) before
-    // the new lines go in.
-    sqlx::query("DELETE FROM booking_drones WHERE booking_id = $1")
+    sqlx::query("DELETE FROM booking_drone_units WHERE booking_id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    check_stock(&mut tx, id, input.start_date, input.end_date, &input.drones).await?;
-    let drones = insert_lines(&mut tx, id, &input.drones).await?;
-
+    reserve_units(&mut tx, id, input.start_date, input.end_date, &ids).await?;
+    let drones = fetch_booked_drones_tx(&mut tx, id).await?;
     tx.commit().await?;
+
     Ok(Json(Booking::from_parts(base, drones)))
 }
 
@@ -339,7 +405,6 @@ pub async fn delete_booking(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    // booking_drones rows are removed via ON DELETE CASCADE.
     let result = sqlx::query("DELETE FROM bookings WHERE id = $1")
         .bind(id)
         .execute(&state.pool)
@@ -351,18 +416,17 @@ pub async fn delete_booking(
 }
 
 // ---------------------------------------------------------------------------
-// Stats (drone usage per type — drives the dashboard chart)
+// Stats
 // ---------------------------------------------------------------------------
 
-pub async fn stats(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<DroneTypeStat>>, AppError> {
+pub async fn stats(State(state): State<AppState>) -> Result<Json<Vec<DroneTypeStat>>, AppError> {
     let rows = sqlx::query_as::<_, DroneTypeStat>(
-        "SELECT drone_type,
-                COUNT(DISTINCT booking_id)          AS bookings,
-                COALESCE(SUM(number_of_drones), 0)  AS total_drones
-         FROM booking_drones
-         GROUP BY drone_type
+        "SELECT d.drone_type,
+                COUNT(DISTINCT bdu.booking_id) AS bookings,
+                COUNT(*)                       AS total_drones
+         FROM booking_drone_units bdu
+         JOIN drones d ON d.id = bdu.drone_id
+         GROUP BY d.drone_type
          ORDER BY total_drones DESC",
     )
     .fetch_all(&state.pool)
@@ -374,97 +438,97 @@ pub async fn stats(
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn fetch_lines(pool: &sqlx::PgPool, booking_id: Uuid) -> Result<Vec<DroneLine>, sqlx::Error> {
-    sqlx::query_as::<_, DroneLine>(
-        "SELECT drone_type, number_of_drones FROM booking_drones WHERE booking_id = $1 ORDER BY id",
+async fn fetch_booked_drones(pool: &sqlx::PgPool, booking_id: Uuid) -> Result<Vec<Drone>, sqlx::Error> {
+    sqlx::query_as::<_, Drone>(
+        "SELECT d.id, d.code, d.drone_type
+         FROM booking_drone_units bdu JOIN drones d ON d.id = bdu.drone_id
+         WHERE bdu.booking_id = $1
+         ORDER BY d.drone_type, d.code",
     )
     .bind(booking_id)
     .fetch_all(pool)
     .await
 }
 
-/// Insert the given drone lines for a booking inside a transaction, returning
-/// them (trimmed) for the API response.
-async fn insert_lines(
+async fn fetch_booked_drones_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     booking_id: Uuid,
-    lines: &[crate::models::DroneLineInput],
-) -> Result<Vec<DroneLine>, sqlx::Error> {
-    let mut out = Vec::with_capacity(lines.len());
-    for line in lines {
-        let drone_type = line.drone_type.trim().to_string();
-        sqlx::query(
-            "INSERT INTO booking_drones (booking_id, drone_type, number_of_drones)
-             VALUES ($1, $2, $3)",
-        )
-        .bind(booking_id)
-        .bind(&drone_type)
-        .bind(line.number_of_drones)
-        .execute(&mut **tx)
-        .await?;
-        out.push(DroneLine {
-            drone_type,
-            number_of_drones: line.number_of_drones,
-        });
-    }
-    Ok(out)
+) -> Result<Vec<Drone>, sqlx::Error> {
+    sqlx::query_as::<_, Drone>(
+        "SELECT d.id, d.code, d.drone_type
+         FROM booking_drone_units bdu JOIN drones d ON d.id = bdu.drone_id
+         WHERE bdu.booking_id = $1
+         ORDER BY d.drone_type, d.code",
+    )
+    .bind(booking_id)
+    .fetch_all(&mut **tx)
+    .await
 }
 
-/// Within a transaction, verify that every requested drone type has enough
-/// stock free during [start, end], counting only OVERLAPPING bookings (the
-/// hotel-room model). Locks each drone-type row (`FOR UPDATE`) so two
-/// concurrent bookings can't both slip past the check. Returns a `Conflict`
-/// (409) naming the first shortfall, which rolls back the transaction.
-async fn check_stock(
+/// Reserve specific drone units for a booking, inside a transaction. Locks the
+/// selected drone rows (`FOR UPDATE`) so two concurrent bookings can't grab the
+/// same unit, verifies each exists and is free for the window (excluding this
+/// booking), then inserts the assignments. Returns `Conflict` on any clash.
+async fn reserve_units(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    exclude_booking: Uuid,
+    booking_id: Uuid,
     start: NaiveDate,
     end: NaiveDate,
-    lines: &[DroneLineInput],
+    drone_ids: &[i32],
 ) -> Result<(), AppError> {
-    // Aggregate requested counts per type; BTreeMap gives a stable lock order.
-    let mut requested: BTreeMap<String, i64> = BTreeMap::new();
-    for line in lines {
-        *requested
-            .entry(line.drone_type.trim().to_string())
-            .or_default() += line.number_of_drones as i64;
+    // Lock the requested drone rows (stable order); confirms they all exist.
+    let locked: Vec<i32> =
+        sqlx::query_scalar("SELECT id FROM drones WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+            .bind(drone_ids)
+            .fetch_all(&mut **tx)
+            .await?;
+    if locked.len() != drone_ids.len() {
+        return Err(AppError::Validation("one or more drones do not exist".into()));
     }
 
-    for (drone_type, qty) in requested {
-        let total: Option<i32> =
-            sqlx::query_scalar("SELECT total_quantity FROM drone_types WHERE name = $1 FOR UPDATE")
-                .bind(&drone_type)
-                .fetch_optional(&mut **tx)
-                .await?;
-        let total = match total {
-            Some(t) => t as i64,
-            None => {
-                return Err(AppError::Conflict(format!(
-                    "Unknown drone type \"{drone_type}\" — add it on the Stock page first"
-                )))
-            }
-        };
+    // Any requested unit already committed to an overlapping booking?
+    let clashes: Vec<String> = sqlx::query_scalar(
+        "SELECT d.code
+         FROM drones d
+         WHERE d.id = ANY($1)
+           AND EXISTS (
+               SELECT 1 FROM booking_drone_units bdu
+               JOIN bookings b ON b.id = bdu.booking_id
+               WHERE bdu.drone_id = d.id
+                 AND b.start_date <= $3 AND b.end_date >= $2
+                 AND b.id <> $4
+           )
+         ORDER BY d.code",
+    )
+    .bind(drone_ids)
+    .bind(start)
+    .bind(end)
+    .bind(booking_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if !clashes.is_empty() {
+        return Err(AppError::Conflict(format!(
+            "Already booked for {start} to {end}: {}",
+            clashes.join(", ")
+        )));
+    }
 
-        let booked: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(bd.number_of_drones), 0)
-             FROM booking_drones bd JOIN bookings b ON b.id = bd.booking_id
-             WHERE bd.drone_type = $1
-               AND b.start_date <= $3 AND b.end_date >= $2
-               AND b.id <> $4",
-        )
-        .bind(&drone_type)
-        .bind(start)
-        .bind(end)
-        .bind(exclude_booking)
-        .fetch_one(&mut **tx)
-        .await?;
-
-        let available = total - booked;
-        if available < qty {
-            return Err(AppError::Conflict(format!(
-                "Not enough \"{drone_type}\" for {start} to {end}: {available} available, {qty} requested"
-            )));
-        }
+    for drone_id in drone_ids {
+        sqlx::query("INSERT INTO booking_drone_units (booking_id, drone_id) VALUES ($1, $2)")
+            .bind(booking_id)
+            .bind(drone_id)
+            .execute(&mut **tx)
+            .await?;
     }
     Ok(())
+}
+
+/// Postgres unique-violation (SQLSTATE 23505).
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23505")
+}
+
+/// Postgres foreign-key-violation (SQLSTATE 23503).
+fn is_fk_violation(e: &sqlx::Error) -> bool {
+    e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23503")
 }

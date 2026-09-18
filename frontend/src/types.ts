@@ -1,7 +1,8 @@
-/** One drone-type line within a booking (a drone type + how many). */
-export interface DroneLine {
+/** An individual drone unit with a unique code. */
+export interface Drone {
+  id: number;
+  code: string;
   drone_type: string;
-  number_of_drones: number;
 }
 
 export interface Booking {
@@ -13,7 +14,7 @@ export interface Booking {
   description: string;
   progress: number; // 0..100
   pic: string;
-  drones: DroneLine[];
+  drones: Drone[]; // the specific units reserved
   total_drones: number;
   created_at: string;
   updated_at: string;
@@ -27,13 +28,14 @@ export interface BookingInput {
   description: string;
   progress: number;
   pic: string;
-  drones: DroneLine[];
+  drone_ids: number[]; // specific drone units to reserve
 }
 
+/** A drone type (category); quantities are derived from its drones. */
 export interface DroneType {
   id: number;
   name: string;
-  total_quantity: number;
+  total_units: number;
   booked_today: number;
 }
 
@@ -43,10 +45,10 @@ export interface DroneTypeStat {
   total_drones: number;
 }
 
-/** Availability of a drone type within a specific date window. */
+/** A drone unit and whether it is free for a requested date window. */
 export interface Availability {
+  id: number;
+  code: string;
   drone_type: string;
-  total_quantity: number;
-  booked: number;
-  available: number;
+  available: boolean;
 }

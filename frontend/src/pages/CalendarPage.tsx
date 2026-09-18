@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { Booking, DroneTypeStat } from "../types";
+import type { Booking, Drone, DroneType, DroneTypeStat } from "../types";
 import {
   addMonths,
   dateInRange,
@@ -23,7 +23,18 @@ export default function CalendarPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Filters
+  const [types, setTypes] = useState<DroneType[]>([]);
+  const [drones, setDrones] = useState<Drone[]>([]);
+  const [filterType, setFilterType] = useState("");
+  const [filterCode, setFilterCode] = useState("");
+
   const grid = useMemo(() => monthGrid(month), [month]);
+
+  useEffect(() => {
+    api.listDroneTypes().then(setTypes).catch(() => {});
+    api.listDrones().then(setDrones).catch(() => {});
+  }, []);
 
   async function load() {
     setLoading(true);
@@ -49,21 +60,47 @@ export default function CalendarPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month]);
 
-  // Map each grid day (ISO string) -> bookings overlapping that day.
+  // Reset the code filter if it no longer belongs to the chosen type.
+  useEffect(() => {
+    if (
+      filterType &&
+      filterCode &&
+      !drones.some((d) => d.code === filterCode && d.drone_type === filterType)
+    ) {
+      setFilterCode("");
+    }
+  }, [filterType, filterCode, drones]);
+
+  const codeOptions = useMemo(
+    () => drones.filter((d) => !filterType || d.drone_type === filterType),
+    [drones, filterType],
+  );
+
+  const filtered = useMemo(
+    () =>
+      bookings.filter((b) => {
+        if (filterType && !b.drones.some((d) => d.drone_type === filterType)) return false;
+        if (filterCode && !b.drones.some((d) => d.code === filterCode)) return false;
+        return true;
+      }),
+    [bookings, filterType, filterCode],
+  );
+
   const byDay = useMemo(() => {
     const map = new Map<string, Booking[]>();
     for (const day of grid) {
       const iso = toISO(day);
       map.set(
         iso,
-        bookings.filter((b) => dateInRange(iso, b.start_date, b.end_date)),
+        filtered.filter((b) => dateInRange(iso, b.start_date, b.end_date)),
       );
     }
     return map;
-  }, [grid, bookings]);
+  }, [grid, filtered]);
 
   const selectedBookings = selected ? byDay.get(selected) ?? [] : [];
   const today = new Date();
+  const filtering = Boolean(filterType || filterCode);
 
   return (
     <div className="calendar-layout">
@@ -72,8 +109,8 @@ export default function CalendarPage() {
           <div>
             <h1 className="calendar-title">{monthLabel(month)}</h1>
             <p className="calendar-subtitle">
-              {bookings.length} booking{bookings.length === 1 ? "" : "s"} this
-              view
+              {filtered.length} booking{filtered.length === 1 ? "" : "s"}
+              {filtering ? " (filtered)" : ""} in view
               {loading && " · loading…"}
             </p>
           </div>
@@ -88,6 +125,42 @@ export default function CalendarPage() {
               ›
             </button>
           </div>
+        </div>
+
+        <div className="filter-bar">
+          <label className="filter">
+            <span>Drone type</span>
+            <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+              <option value="">All types</option>
+              {types.map((t) => (
+                <option key={t.id} value={t.name}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter">
+            <span>Unique code</span>
+            <select value={filterCode} onChange={(e) => setFilterCode(e.target.value)}>
+              <option value="">All codes</option>
+              {codeOptions.map((d) => (
+                <option key={d.id} value={d.code}>
+                  {d.code}
+                </option>
+              ))}
+            </select>
+          </label>
+          {filtering && (
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => {
+                setFilterType("");
+                setFilterCode("");
+              }}
+            >
+              Clear
+            </button>
+          )}
         </div>
 
         {error && <div className="banner banner--error">{error}</div>}
@@ -114,11 +187,7 @@ export default function CalendarPage() {
               .filter(Boolean)
               .join(" ");
             return (
-              <button
-                key={iso}
-                className={classes}
-                onClick={() => setSelected(iso)}
-              >
+              <button key={iso} className={classes} onClick={() => setSelected(iso)}>
                 <span className="cell-date">{day.getDate()}</span>
                 <div className="cell-chips">
                   {items.slice(0, 3).map((b) => (
@@ -126,15 +195,15 @@ export default function CalendarPage() {
                       key={b.id}
                       className="chip"
                       style={{ background: colorFor(b.project_name) }}
-                      title={`${b.project_name} — ${b.total_drones} drone(s) across ${b.drones.length} type(s)`}
+                      title={`${b.project_name} — ${b.total_drones} drone(s): ${b.drones
+                        .map((d) => d.code)
+                        .join(", ")}`}
                     >
                       {b.project_name}
                     </span>
                   ))}
                   {items.length > 3 && (
-                    <span className="chip chip--more">
-                      +{items.length - 3} more
-                    </span>
+                    <span className="chip chip--more">+{items.length - 3} more</span>
                   )}
                 </div>
               </button>
@@ -148,11 +217,7 @@ export default function CalendarPage() {
         </div>
       </section>
 
-      <BookingDetail
-        date={selected}
-        bookings={selectedBookings}
-        onDeleted={() => load()}
-      />
+      <BookingDetail date={selected} bookings={selectedBookings} onDeleted={() => load()} />
     </div>
   );
 }

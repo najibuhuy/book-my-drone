@@ -59,6 +59,14 @@ async fn main() -> anyhow::Result<()> {
             axum::routing::put(handlers::update_drone_type)
                 .delete(handlers::delete_drone_type),
         )
+        .route(
+            "/api/drones",
+            get(handlers::list_drones).post(handlers::create_drone),
+        )
+        .route(
+            "/api/drones/{id}",
+            axum::routing::put(handlers::update_drone).delete(handlers::delete_drone),
+        )
         .route("/api/availability", get(handlers::availability))
         .route(
             "/api/bookings",

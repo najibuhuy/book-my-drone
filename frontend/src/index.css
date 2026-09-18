@@ -667,3 +667,99 @@ body {
   color: var(--danger);
   font-weight: 600;
 }
+
+/* ---------- Monospace codes ---------- */
+.mono {
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+  font-size: 12.5px;
+}
+
+/* ---------- Stock page (two columns) ---------- */
+.stock-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .stock-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.section-title {
+  font-size: 15px;
+  margin: 0 0 10px;
+}
+.stock-add select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--surface);
+}
+
+/* ---------- Calendar filter bar ---------- */
+.filter-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.filter select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+  min-width: 160px;
+}
+
+/* ---------- Drone picker (booking form) ---------- */
+.drone-picker {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.picker-select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+}
+.picker-select:first-child {
+  min-width: 200px;
+}
+.picker-select:nth-child(2) {
+  flex: 1;
+  min-width: 200px;
+}
+.selected-drones {
+  margin-top: 10px;
+}
+.tag-x {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 0 0 6px;
+  line-height: 1;
+}
+.tag-x:hover {
+  color: var(--danger);
+}

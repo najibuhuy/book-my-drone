@@ -8,22 +8,22 @@ calendar of what's booked and create bookings with all the project details.
 
 Three pages:
 
-- **Home** — a month calendar. Click any day to see the bookings on that date
-  (project, vendor, PIC, dates, progress, and the drone breakdown by type with a
-  total count), plus a chart of drones booked per type.
-- **Book** — a table of all bookings, with create / edit / delete. Like a hotel
-  reservation, one booking can hold **several drone-type lines**, each with its
-  own count (e.g. 2× "DJI Mavic 3" + 3× "Autel EVO II"). The form shows **live
-  availability** for the chosen dates and blocks over-booking.
-- **Stock** — manage the drone-type catalog and how many of each you own
-  (`total_quantity`), with an "in use / free today" snapshot.
+- **Home** — a month calendar, **filterable by drone type and unique code**.
+  Click any day to see the bookings on that date (project, vendor, PIC, dates,
+  progress, and the reserved drone codes), plus a chart of drones booked per type.
+- **Book** — a table of all bookings, with create / edit / delete. A booking
+  reserves **specific drones** (picked by code); the form shows **live
+  availability** for the chosen dates and greys out units already taken.
+- **Stock** — manage the drone-type catalog **and register individual drones,
+  each with a unique code** (e.g. `MAV-001`), with an "in use / free today"
+  snapshot per type.
 
-**Time-aware stock (hotel-room model).** Each drone type has a stock count. When
-a booking is created or updated, a database transaction (with row locks) checks
-that enough of each type is free during the booking's dates, counting only
-**overlapping** bookings — so the same drone frees up for non-overlapping
-periods. If stock is insufficient the API returns `409 Conflict` and the booking
-is not created.
+**Time-aware, per-unit (hotel-room model).** Each drone is an individual unit
+with a unique code. When a booking is created or updated, a database transaction
+locks the selected drone rows (`FOR UPDATE`) and rejects any unit already
+reserved by an **overlapping** booking — so the same drone frees up for
+non-overlapping periods. On a clash the API returns `409 Conflict` (naming the
+code) and the booking is not created.
 
 ## Stack
 
@@ -75,7 +75,7 @@ Everything is configured through environment variables (see `backend/.env.exampl
 
 | Variable       | Default                                              | Purpose                    |
 | -------------- | --------------------------------------------------- | -------------------------- |
-| `DATABASE_URL` | `postgres://drone:drone@localhost:5432/bookmydrone` | Postgres connection string |
+| `DATABASE_URL` | `postgres://drone:drone@localhost:5433/bookmydrone` | Postgres connection string |
 | `BIND_ADDR`    | `0.0.0.0:8080`                                       | Address the API binds to   |
 | `RUST_LOG`     | `book_my_drone_backend=debug,tower_http=info,info`  | Log filter                 |
 
@@ -91,16 +91,20 @@ The frontend proxy target can be overridden with `VITE_API_TARGET`.
 | `GET`    | `/api/bookings/:id`    | Get one booking                              |
 | `PUT`    | `/api/bookings/:id`    | Update a booking                             |
 | `DELETE` | `/api/bookings/:id`    | Delete a booking                             |
-| `GET`    | `/api/drone-types`     | List drone types with stock + today's usage  |
-| `POST`   | `/api/drone-types`     | Add a drone type (`name`, `total_quantity`)  |
-| `PUT`    | `/api/drone-types/:id` | Update a drone type's name / stock           |
-| `DELETE` | `/api/drone-types/:id` | Remove a drone type                          |
-| `GET`    | `/api/availability`    | Per-type free count for `?start=&end=&exclude=` |
+| `GET`    | `/api/drone-types`     | List types with `total_units` + today's usage |
+| `POST`   | `/api/drone-types`     | Add a drone type (`name`)                    |
+| `PUT`    | `/api/drone-types/:id` | Rename a drone type (cascades to its drones) |
+| `DELETE` | `/api/drone-types/:id` | Remove a type (409 if it still has drones)   |
+| `GET`    | `/api/drones`          | List individual drones (`id`, `code`, type)  |
+| `POST`   | `/api/drones`          | Register a drone (`code`, `drone_type`)      |
+| `PUT`    | `/api/drones/:id`      | Update a drone's code / type                 |
+| `DELETE` | `/api/drones/:id`      | Remove a drone (409 if reserved)             |
+| `GET`    | `/api/availability`    | Per-unit availability for `?start=&end=&exclude=` |
 | `GET`    | `/api/stats`           | Drones booked per type (dashboard chart)     |
 
 ### Booking payload
 
-A booking carries one or more drone-type lines (`drones[]`):
+A booking reserves specific drone units by id (`drone_ids[]`):
 
 ```json
 {
@@ -111,14 +115,11 @@ A booking carries one or more drone-type lines (`drones[]`):
   "description": "Multi-fleet survey",
   "progress": 25,
   "pic": "Rina",
-  "drones": [
-    { "drone_type": "DJI Mavic 3", "number_of_drones": 2 },
-    { "drone_type": "Autel EVO II", "number_of_drones": 3 }
-  ]
+  "drone_ids": [24, 25, 11]
 }
 ```
 
-Responses add a computed `total_drones` alongside the returned `drones[]`.
+Responses return the reserved units in `drones[]` plus a computed `total_drones`.
 
 ## Project layout
 

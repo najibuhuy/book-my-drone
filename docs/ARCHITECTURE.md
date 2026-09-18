@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Implemented (v0.1) |
-| **Last updated** | 2026-09-17 |
+| **Last updated** | 2026-09-18 |
 | **Related docs** | [PRD.md](PRD.md) · [../README.md](../README.md) |
 
 ---
@@ -35,7 +35,7 @@ flowchart LR
     A["Axum API :8080<br/>handlers · validation · tx"]
   end
   subgraph Data
-    P[("PostgreSQL :5433<br/>bookings · booking_drones · drone_types")]
+    P[("PostgreSQL :5433<br/>bookings · booking_drone_units · drones · drone_types")]
   end
 
   B -->|HTTP/JSON| V
@@ -72,13 +72,19 @@ mismatches surface at request time rather than at `cargo build`.
 
 ```mermaid
 erDiagram
-  bookings ||--o{ booking_drones : "has lines (cascade delete)"
-  drone_types ||--o{ booking_drones : "referenced by name (FK)"
+  bookings ||--o{ booking_drone_units : "reserves (cascade delete)"
+  drones   ||--o{ booking_drone_units : "reserved by (restrict delete)"
+  drone_types ||--o{ drones : "categorizes (FK by name)"
 
   drone_types {
     serial      id PK
     text        name UK
-    int         total_quantity "CHECK >= 0"
+    timestamptz created_at
+  }
+  drones {
+    serial      id PK
+    text        code UK
+    text        drone_type FK "→ drone_types.name ON UPDATE CASCADE ON DELETE RESTRICT"
     timestamptz created_at
   }
   bookings {
@@ -93,29 +99,27 @@ erDiagram
     timestamptz created_at
     timestamptz updated_at
   }
-  booking_drones {
-    serial id PK
-    uuid   booking_id FK "→ bookings.id ON DELETE CASCADE"
-    text   drone_type FK "→ drone_types.name ON UPDATE CASCADE ON DELETE RESTRICT"
-    int    number_of_drones "CHECK >= 1"
+  booking_drone_units {
+    uuid    booking_id FK "→ bookings.id ON DELETE CASCADE"
+    int     drone_id   FK "→ drones.id ON DELETE RESTRICT"
   }
 ```
 
 ### Design decisions
 
-- **A booking has many drone lines** (`booking_drones`), mirroring a hotel
-  reservation that can hold several room types. `total_drones` is derived, not
-  stored.
-- **`booking_drones.drone_type` references `drone_types.name`** (a `UNIQUE`
-  column) rather than an integer id, because all stock math joins by name and the
-  calendar/detail views display the name. The foreign key carries:
-  - `ON UPDATE CASCADE` — renaming a type updates every booking line
-    automatically, keeping stock accounting consistent.
-  - `ON DELETE RESTRICT` — a type still referenced by a booking cannot be
-    deleted (the API turns the DB error into a friendly `409`).
-- **`ON DELETE CASCADE` on `booking_id`** — deleting a booking removes its lines.
-- **Check constraints** (`progress 0..100`, `number_of_drones ≥ 1`, valid date
-  range, `total_quantity ≥ 0`) enforce invariants regardless of the caller.
+- **Each drone is an individual unit** (`drones`) with a `UNIQUE` code, belonging
+  to a type. How many of a type the company owns is derived (count of `drones`),
+  not stored.
+- **A booking reserves specific units** via `booking_drone_units` (PK
+  `(booking_id, drone_id)`), so a booking's `total_drones` is the number of rows.
+- **`drones.drone_type` references `drone_types.name`** (a `UNIQUE` column) with
+  `ON UPDATE CASCADE` (renaming a type follows its drones) and `ON DELETE
+  RESTRICT` (a type with drones can't be deleted). Bookings reference drones by
+  stable `id`, so renames never touch reservations.
+- **`ON DELETE CASCADE` on `booking_id`** — deleting a booking frees its units.
+  **`ON DELETE RESTRICT` on `drone_id`** — a reserved drone can't be deleted.
+- **Check constraints** (`progress 0..100`, valid date range) and uniqueness
+  (`drone.code`, `drone_type.name`) enforce invariants regardless of the caller.
 
 ### Migrations
 
@@ -124,9 +128,10 @@ Applied in order at startup by `sqlx::migrate!`:
 | File | Purpose |
 | --- | --- |
 | `0001_init.sql` | `drone_types`, `bookings`; seed default types |
-| `0002_multi_drone_types.sql` | `booking_drones`; migrate single-type → lines; drop old columns |
+| `0002_multi_drone_types.sql` | count-based `booking_drones`; migrate single-type → lines |
 | `0003_drone_stock.sql` | add `total_quantity` to `drone_types`; seed stock |
-| `0004_drone_type_fk.sql` | FK `booking_drones.drone_type → drone_types.name` (cascade/restrict) |
+| `0004_drone_type_fk.sql` | FK `booking_drones.drone_type → drone_types.name` |
+| `0005_drone_units.sql` | `drones` (unique code) + `booking_drone_units`; migrate counts → specific units (overlap-aware, fails loudly if infeasible); drop `booking_drones` and `total_quantity` |
 
 ## 5. API reference
 
@@ -136,21 +141,25 @@ Base path `/api`. All bodies are JSON.
 | --- | --- | --- |
 | GET | `/health` | Liveness |
 | GET | `/bookings?start=&end=` | List bookings overlapping the window (both optional) |
-| POST | `/bookings` | Create a booking (stock-checked) |
+| POST | `/bookings` | Create a booking (reserves specific units) |
 | GET | `/bookings/{id}` | Fetch one booking |
-| PUT | `/bookings/{id}` | Update a booking (stock-checked, replaces lines) |
-| DELETE | `/bookings/{id}` | Delete a booking (cascades its lines) |
-| GET | `/drone-types` | List types with `total_quantity` + `booked_today` |
-| POST | `/drone-types` | Create a type (`name`, `total_quantity`); 409 on duplicate |
-| PUT | `/drone-types/{id}` | Update name / quantity (rename cascades) |
-| DELETE | `/drone-types/{id}` | Delete a type; 409 if referenced by a booking |
-| GET | `/availability?start=&end=&exclude=` | Per-type free count for a window |
+| PUT | `/bookings/{id}` | Update a booking (replaces its reserved units) |
+| DELETE | `/bookings/{id}` | Delete a booking (frees its units) |
+| GET | `/drone-types` | List types with `total_units` + `booked_today` |
+| POST | `/drone-types` | Create a type (`name`); 409 on duplicate |
+| PUT | `/drone-types/{id}` | Rename a type (cascades to its drones) |
+| DELETE | `/drone-types/{id}` | Delete a type; 409 if it still has drones |
+| GET | `/drones` | List all drones (`id`, `code`, `drone_type`) |
+| POST | `/drones` | Register a drone (`code`, `drone_type`); 409 on duplicate code |
+| PUT | `/drones/{id}` | Update a drone's code / type |
+| DELETE | `/drones/{id}` | Delete a drone; 409 if reserved by a booking |
+| GET | `/availability?start=&end=&exclude=` | Per-unit availability for a window |
 | GET | `/stats` | Drones booked per type (dashboard chart) |
 
 ### Representative payload
 
 ```json
-// POST /api/bookings
+// POST /api/bookings — reserve specific drone units by id
 {
   "project_name": "Harbour Mapping",
   "start_date": "2026-09-22",
@@ -159,14 +168,17 @@ Base path `/api`. All bodies are JSON.
   "description": "Multi-fleet survey",
   "progress": 25,
   "pic": "Rina",
-  "drones": [
-    { "drone_type": "DJI Mavic 3", "number_of_drones": 2 },
-    { "drone_type": "Autel EVO II", "number_of_drones": 3 }
-  ]
+  "drone_ids": [24, 25, 11]
 }
 ```
 
-Responses add a computed `total_drones` alongside the returned `drones[]`.
+Responses return the reserved units and a computed total:
+
+```json
+{ "id": "…", "project_name": "Harbour Mapping", "…": "…",
+  "drones": [ { "id": 24, "code": "DJI Mavic 3-004", "drone_type": "DJI Mavic 3" } ],
+  "total_drones": 3 }
+```
 
 ### Error model
 
@@ -176,10 +188,10 @@ Errors return `{"error": "message"}` with a status code:
 | --- | --- | --- |
 | 400 Bad Request | Validation failure | `end_date must be on or after start_date` |
 | 404 Not Found | Missing resource | `booking not found` |
-| 409 Conflict | Well-formed but not allowed by current state | `Not enough "DJI Mavic 3" for 2026-09-22 to 2026-09-24: 2 available, 3 requested` |
+| 409 Conflict | Well-formed but not allowed by current state | `Already booked for 2026-09-22 to 2026-09-24: DJI Mavic 3-001` |
 | 500 | Unexpected server/database error | (generic message; details logged) |
 
-## 6. Key flow — creating a booking with the stock check
+## 6. Key flow — creating a booking that reserves specific units
 
 ```mermaid
 sequenceDiagram
@@ -189,23 +201,21 @@ sequenceDiagram
   participant D as PostgreSQL
 
   F->>A: GET /availability?start&end (live hint)
-  A-->>F: per-type free counts
-  F->>A: POST /bookings {dates, drones[]}
-  A->>A: validate() (dates, progress, lines)
+  A-->>F: each unit + available flag
+  F->>A: POST /bookings {dates, drone_ids[]}
+  A->>A: validate() (dates, progress, ≥1 unit)
   A->>D: BEGIN
   A->>D: INSERT bookings ... RETURNING id
-  loop each requested drone type (sorted)
-    A->>D: SELECT total_quantity ... WHERE name=? FOR UPDATE
-    A->>D: SELECT SUM(number_of_drones) from overlapping bookings
-    A->>A: available = total − booked
-    alt available < requested
-      A->>D: ROLLBACK
-      A-->>F: 409 Conflict "Not enough X"
-    end
+  A->>D: SELECT id FROM drones WHERE id = ANY(ids) ORDER BY id FOR UPDATE
+  A->>A: verify all ids exist
+  A->>D: SELECT codes of ids already in an OVERLAPPING booking (excl. self)
+  alt any clash
+    A->>D: ROLLBACK
+    A-->>F: 409 Conflict "Already booked: <codes>"
   end
-  A->>D: INSERT booking_drones (lines)
+  A->>D: INSERT booking_drone_units (one row per id)
   A->>D: COMMIT
-  A-->>F: 201 Created (booking + total_drones)
+  A-->>F: 201 Created (booking + reserved units)
 ```
 
 The client-side availability lookup is only a **hint**; the server's in-
@@ -214,28 +224,32 @@ submits and the server enforces correctness.
 
 ## 7. Concurrency & data integrity
 
-The core invariant — *never book more drones of a type than are free for the
-requested dates* — is protected on three levels:
+The core invariant — *a drone is never reserved by two overlapping bookings* — is
+protected on three levels:
 
-1. **Transaction** — the booking row and its lines are written atomically; a
-   shortfall rolls everything back, so no partial booking persists.
-2. **Row lock** — `SELECT total_quantity ... FOR UPDATE` locks the drone-type
-   catalog row before counting overlaps. Two concurrent transactions booking the
-   same type serialize on that lock, so they cannot both read "1 free" and each
-   insert — the second waits, re-reads, and correctly sees the first's booking.
-   Requested types are locked in a stable (sorted) order to avoid deadlocks.
-3. **Foreign keys** — `booking_drones.drone_type → drone_types.name` with
-   `ON UPDATE CASCADE` / `ON DELETE RESTRICT` guarantees stock math (which joins
-   by name) can never desync via a rename or a delete.
+1. **Transaction** — the booking row and its unit assignments are written
+   atomically; any clash rolls everything back, so no partial booking persists.
+2. **Row lock** — `reserve_units()` runs `SELECT id FROM drones WHERE id =
+   ANY($1) ORDER BY id FOR UPDATE`, locking the requested drone rows *before* the
+   clash check. Two concurrent transactions reserving the same unit serialize on
+   that lock: the second blocks until the first commits, then its clash query
+   sees the first's now-committed reservation and returns `409`. Locking in id
+   order avoids deadlocks.
+3. **Foreign keys** — `drones.drone_type → drone_types.name`
+   (`ON UPDATE CASCADE` / `ON DELETE RESTRICT`) keeps the catalog consistent, and
+   `booking_drone_units.drone_id → drones.id` (`ON DELETE RESTRICT`) prevents
+   deleting a reserved drone. Bookings reference drones by stable `id`, so a type
+   rename never disturbs reservations.
 
-Availability for a window `[s, e]` excluding an optional booking `b`:
+A unit is available for a window `[s, e]` (excluding an optional booking `b`) when
+it appears in **no** overlapping booking:
 
 ```
-available(type) = total_quantity(type)
-                − Σ number_of_drones
-                    for booking_drones of `type`
-                    joined to bookings that overlap [s, e]  (start ≤ e AND end ≥ s)
-                    and are not booking `b`
+available(drone) = NOT EXISTS (
+    booking_drone_units of `drone`
+    joined to bookings that overlap [s, e]  (start ≤ e AND end ≥ s)
+    and are not booking `b`
+)
 ```
 
 `exclude=b` lets the edit flow avoid counting a booking against itself.
@@ -246,10 +260,10 @@ Single-page app with three routes under a shared shell (`App.tsx` + nav):
 
 | Route | Page | Purpose |
 | --- | --- | --- |
-| `/` | `CalendarPage` | Home — month calendar, day detail panel, drones-per-type chart |
+| `/` | `CalendarPage` | Home — month calendar with type/code filters, day detail panel, drones-per-type chart |
 | `/book` | `BookPage` | Table of all bookings; create/edit/delete |
-| `/book/new`, `/book/:id` | `NewBookingPage` | Create / edit form with live availability |
-| `/stock` | `StockPage` | Drone-type catalog + stock management |
+| `/book/new`, `/book/:id` | `NewBookingPage` | Create / edit form; picks specific units with live availability |
+| `/stock` | `StockPage` | Drone-type catalog + individual drone (code) management |
 
 Supporting modules:
 
@@ -273,8 +287,9 @@ backend/src/
 - `AppState { pool: PgPool }` is shared across handlers.
 - `AppError` maps domain errors to status codes (`Validation→400`,
   `NotFound→404`, `Conflict→409`, DB errors→500 with logging).
-- `check_stock()` is the transactional, lock-based availability guard used by
-  both create and update.
+- `reserve_units()` is the transactional, lock-based guard used by both create
+  and update: it locks the requested drone rows `FOR UPDATE`, rejects any unit
+  already in an overlapping booking, then inserts the assignments.
 
 ## 10. Configuration & running
 
@@ -315,10 +330,11 @@ cd frontend && bun install && bun run dev   # SPA on :5173
 
 - Move hot-path queries to compile-time-checked sqlx (`query!`) once a CI
   database is available, to catch schema drift at build time.
-- Add indexes as data grows (there is already a `(start_date, end_date)` index
-  on `bookings` and a `booking_id` index on `booking_drones`).
+- Add indexes as data grows (there are already a `(start_date, end_date)` index
+  on `bookings`, `idx_drones_type`, and `idx_bdu_drone`).
 - Introduce pagination on the bookings list.
-- Per-airframe inventory if serial-level tracking becomes necessary (would
-  replace the count-based `total_quantity` model).
+- A GiST exclusion constraint (`btree_gist`) on `booking_drone_units` could push
+  the no-overlap invariant fully into the schema, complementing the current
+  transactional lock.
 - Package the frontend as static assets served behind the API (or a CDN) for
   production, removing the Vite proxy.

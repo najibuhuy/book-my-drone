@@ -95,13 +95,14 @@ export default function BookPage() {
                   </td>
                   <td>
                     <div className="drone-tags">
-                      {b.drones.map((d, i) => (
+                      {b.drones.map((d) => (
                         <span
-                          key={i}
-                          className="drone-tag"
+                          key={d.id}
+                          className="drone-tag mono"
                           style={{ borderColor: colorFor(d.drone_type) }}
+                          title={d.drone_type}
                         >
-                          <b>{d.number_of_drones}×</b> {d.drone_type}
+                          {d.code}
                         </span>
                       ))}
                     </div>
