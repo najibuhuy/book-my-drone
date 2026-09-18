@@ -1,0 +1,15 @@
+# Normalize line endings so files are byte-identical on every machine.
+# Critical for SQL migrations: sqlx checksums the file bytes, and a CRLF vs LF
+# difference triggers "migration N was previously applied but has been modified".
+* text=auto eol=lf
+
+# SQL migrations must always be LF (checksum stability).
+*.sql text eol=lf
+
+# Binary files — never touch their bytes.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.lockb binary
