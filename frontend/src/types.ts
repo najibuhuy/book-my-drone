@@ -1,20 +1,42 @@
-/** An individual drone unit with a unique code. */
+export type DroneStatus = "Standby" | "Operational" | "Incomplete";
+
+/** An individual drone unit with a unique code and status. */
 export interface Drone {
   id: number;
   code: string;
   drone_type: string;
+  status: DroneStatus;
+}
+
+/** A pilot assigned to a drone within a booking. */
+export interface AssignedPilot {
+  id: number; // assignment id (for unassigning)
+  pilot_id: number;
+  name: string;
+}
+
+/** A drone as reserved by a booking, with its area completed + pilots. */
+export interface BookedDrone {
+  id: number;
+  code: string;
+  drone_type: string;
+  status: DroneStatus;
+  area_done_ha: number;
+  pilots: AssignedPilot[];
 }
 
 export interface Booking {
   id: string;
   project_name: string;
-  start_date: string; // ISO date (YYYY-MM-DD)
-  end_date: string; // ISO date (YYYY-MM-DD)
+  start_date: string; // YYYY-MM-DD
+  end_date: string; // YYYY-MM-DD
   vendor_name: string;
   description: string;
-  progress: number; // 0..100
+  total_area_ha: number;
+  area_done_ha: number;
+  progress: number; // derived 0..100
   pic: string;
-  drones: Drone[]; // the specific units reserved
+  drones: BookedDrone[];
   total_drones: number;
   created_at: string;
   updated_at: string;
@@ -26,12 +48,11 @@ export interface BookingInput {
   end_date: string;
   vendor_name: string;
   description: string;
-  progress: number;
+  total_area_ha: number;
   pic: string;
-  drone_ids: number[]; // specific drone units to reserve
+  drone_ids: number[];
 }
 
-/** A drone type (category); quantities are derived from its drones. */
 export interface DroneType {
   id: number;
   name: string;
@@ -45,10 +66,34 @@ export interface DroneTypeStat {
   total_drones: number;
 }
 
-/** A drone unit and whether it is free for a requested date window. */
 export interface Availability {
   id: number;
   code: string;
   drone_type: string;
   available: boolean;
+}
+
+/** A per-drone daily area log within a booking. */
+export interface DailyProgress {
+  id: number;
+  drone_id: number;
+  code: string;
+  entry_date: string; // YYYY-MM-DD
+  area_ha: number;
+}
+
+export interface Pilot {
+  id: number;
+  name: string;
+}
+
+/** One entry of a drone's pilot history, derived from the projects it flew. */
+export interface DronePilotHistory {
+  id: number;
+  booking_id: string;
+  project_name: string;
+  pilot_id: number;
+  pilot_name: string;
+  start_date: string;
+  end_date: string;
 }

@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Implemented (v0.1) |
-| **Last updated** | 2026-09-18 |
+| **Last updated** | 2026-09-21 |
 | **Related docs** | [PRD.md](PRD.md) · [../README.md](../README.md) |
 
 ---
@@ -35,7 +35,7 @@ flowchart LR
     A["Axum API :8080<br/>handlers · validation · tx"]
   end
   subgraph Data
-    P[("PostgreSQL :5433<br/>bookings · booking_drone_units · drones · drone_types")]
+    P[("PostgreSQL :5433<br/>bookings · booking_drone_units · drones · drone_types<br/>drone_daily_progress · pilots · booking_drone_pilots")]
   end
 
   B -->|HTTP/JSON| V
@@ -75,6 +75,9 @@ erDiagram
   bookings ||--o{ booking_drone_units : "reserves (cascade delete)"
   drones   ||--o{ booking_drone_units : "reserved by (restrict delete)"
   drone_types ||--o{ drones : "categorizes (FK by name)"
+  booking_drone_units ||--o{ drone_daily_progress : "logs per day (composite FK, cascade)"
+  booking_drone_units ||--o{ booking_drone_pilots : "flown by (composite FK, cascade)"
+  pilots ||--o{ booking_drone_pilots : "assigned to (restrict delete)"
 
   drone_types {
     serial      id PK
@@ -85,6 +88,7 @@ erDiagram
     serial      id PK
     text        code UK
     text        drone_type FK "→ drone_types.name ON UPDATE CASCADE ON DELETE RESTRICT"
+    text        status "CHECK Standby|Operational|Incomplete, default Standby"
     timestamptz created_at
   }
   bookings {
@@ -94,7 +98,7 @@ erDiagram
     date        end_date
     text        vendor_name
     text        description
-    int         progress "CHECK 0..100"
+    double      total_area_ha "total area to cover (HA)"
     text        pic
     timestamptz created_at
     timestamptz updated_at
@@ -102,6 +106,23 @@ erDiagram
   booking_drone_units {
     uuid    booking_id FK "→ bookings.id ON DELETE CASCADE"
     int     drone_id   FK "→ drones.id ON DELETE RESTRICT"
+  }
+  drone_daily_progress {
+    serial  id PK
+    uuid    booking_id FK "composite (booking_id, drone_id) → booking_drone_units ON DELETE CASCADE"
+    int     drone_id   FK "part of composite FK"
+    date    entry_date
+    double  area_ha "hectares completed that day"
+  }
+  pilots {
+    serial  id PK
+    text    name UK
+  }
+  booking_drone_pilots {
+    serial  id PK
+    uuid    booking_id FK "composite (booking_id, drone_id) → booking_drone_units ON DELETE CASCADE"
+    int     drone_id   FK "part of composite FK"
+    int     pilot_id   FK "→ pilots.id ON DELETE RESTRICT"
   }
 ```
 
@@ -118,8 +139,33 @@ erDiagram
   stable `id`, so renames never touch reservations.
 - **`ON DELETE CASCADE` on `booking_id`** — deleting a booking frees its units.
   **`ON DELETE RESTRICT` on `drone_id`** — a reserved drone can't be deleted.
-- **Check constraints** (`progress 0..100`, valid date range) and uniqueness
-  (`drone.code`, `drone_type.name`) enforce invariants regardless of the caller.
+- **Check constraints** (valid date range, `drones.status` in the allowed set)
+  and uniqueness (`drone.code`, `drone_type.name`, `pilots.name`, and
+  `booking_drone_pilots(booking_id, drone_id, pilot_id)`) enforce invariants
+  regardless of the caller.
+- **Progress is derived, not entered.** A booking's `progress` % is computed as
+  `round(area_done_ha / total_area_ha * 100)` (clamped 0..100), where
+  `area_done_ha` is the sum of that booking's `drone_daily_progress` rows. Each
+  assigned drone logs hectares completed per day, upserted on
+  `(booking_id, drone_id, entry_date)`. `drone_daily_progress` uses a **composite
+  FK** `(booking_id, drone_id) → booking_drone_units` so a daily log can only
+  exist for a drone actually reserved by that booking, and cascades when the unit
+  is freed.
+- **Editing a booking diffs its drone set** rather than replacing it wholesale:
+  `update_booking` deletes only removed units and inserts added ones
+  (`ON CONFLICT DO NOTHING`). Kept units — and their logged daily progress —
+  survive edits, so "boosting" a booking (adding another drone via the edit form)
+  never discards existing logs.
+- **Pilots are assigned per drone within a booking (project).**
+  `booking_drone_pilots` records which pilot(s) flew a drone on a given
+  booking — **multiple pilots per drone per project are allowed**. A composite
+  FK `(booking_id, drone_id) → booking_drone_units` means a pilot can only be
+  assigned to a drone actually reserved by that booking (assign the drone to the
+  booking first), and the assignment cascades away when the unit is freed. A
+  `UNIQUE(booking_id, drone_id, pilot_id)` stops the same pilot being added to
+  the same drone twice in one booking. A drone's pilot **history is derived** from
+  the bookings it flew (each booking supplies the dates), not a standalone date
+  range. A pilot with assignments can't be deleted (`ON DELETE RESTRICT`).
 
 ### Migrations
 
@@ -132,6 +178,8 @@ Applied in order at startup by `sqlx::migrate!`:
 | `0003_drone_stock.sql` | add `total_quantity` to `drone_types`; seed stock |
 | `0004_drone_type_fk.sql` | FK `booking_drones.drone_type → drone_types.name` |
 | `0005_drone_units.sql` | `drones` (unique code) + `booking_drone_units`; migrate counts → specific units (overlap-aware, fails loudly if infeasible); drop `booking_drones` and `total_quantity` |
+| `0006_area_progress_pilots.sql` | bookings.total_area_ha (+drop progress); drones.status; drone_daily_progress; pilots + drone_pilot_assignments |
+| `0007_project_pilots.sql` | replace standalone drone_pilot_assignments with project-scoped booking_drone_pilots (multi-pilot per drone per booking) |
 
 ## 5. API reference
 
@@ -142,17 +190,26 @@ Base path `/api`. All bodies are JSON.
 | GET | `/health` | Liveness |
 | GET | `/bookings?start=&end=` | List bookings overlapping the window (both optional) |
 | POST | `/bookings` | Create a booking (reserves specific units) |
-| GET | `/bookings/{id}` | Fetch one booking |
-| PUT | `/bookings/{id}` | Update a booking (replaces its reserved units) |
+| GET | `/bookings/{id}` | Fetch one booking (incl. `total_area_ha`, `area_done_ha`, derived `progress`, `drones[]` with `status`, `area_done_ha`, and assigned `pilots[]`) |
+| PUT | `/bookings/{id}` | Update a booking (diffs its reserved units — kept units keep their daily logs; can add a drone to "boost") |
 | DELETE | `/bookings/{id}` | Delete a booking (frees its units) |
+| GET | `/bookings/{id}/daily-progress` | List a booking's per-drone daily progress rows |
+| POST | `/bookings/{id}/daily-progress` | Upsert a daily log `{drone_id, entry_date, area_ha}` (ON CONFLICT) |
+| DELETE | `/daily-progress/{id}` | Delete a daily-progress row |
 | GET | `/drone-types` | List types with `total_units` + `booked_today` |
 | POST | `/drone-types` | Create a type (`name`); 409 on duplicate |
 | PUT | `/drone-types/{id}` | Rename a type (cascades to its drones) |
 | DELETE | `/drone-types/{id}` | Delete a type; 409 if it still has drones |
-| GET | `/drones` | List all drones (`id`, `code`, `drone_type`) |
-| POST | `/drones` | Register a drone (`code`, `drone_type`); 409 on duplicate code |
-| PUT | `/drones/{id}` | Update a drone's code / type |
+| GET | `/drones` | List all drones (`id`, `code`, `drone_type`, `status`) |
+| POST | `/drones` | Register a drone (`code`, `drone_type`, `status`); 409 on duplicate code |
+| PUT | `/drones/{id}` | Update a drone's code / type / status |
 | DELETE | `/drones/{id}` | Delete a drone; 409 if reserved by a booking |
+| GET | `/pilots` | List pilots (`id`, `name`) |
+| POST | `/pilots` | Create a pilot (`name`); 409 on duplicate |
+| DELETE | `/pilots/{id}` | Delete a pilot; 409 if still assigned to a drone |
+| POST | `/bookings/{id}/drone-pilots` | Assign a pilot to a drone in this booking `{drone_id, pilot_id}`; 409 on duplicate or if the drone isn't in the booking |
+| DELETE | `/booking-drone-pilots/{id}` | Unassign a pilot (by assignment id) |
+| GET | `/drones/{id}/pilot-history` | The drone's pilots across projects `[{id, booking_id, project_name, pilot_id, pilot_name, start_date, end_date}]` (dates from each booking) |
 | GET | `/availability?start=&end=&exclude=` | Per-unit availability for a window |
 | GET | `/stats` | Drones booked per type (dashboard chart) |
 
@@ -166,17 +223,22 @@ Base path `/api`. All bodies are JSON.
   "end_date": "2026-09-28",
   "vendor_name": "AeroWorks",
   "description": "Multi-fleet survey",
-  "progress": 25,
+  "total_area_ha": 120.5,
   "pic": "Rina",
   "drone_ids": [24, 25, 11]
 }
 ```
 
-Responses return the reserved units and a computed total:
+Responses return the reserved units, a computed total, the target/covered area,
+and the **derived** progress. `progress` is not sent in the body — it is computed
+from the daily logs (`round(area_done_ha / total_area_ha * 100)`, clamped 0..100).
+Each entry in `drones[]` carries its `status` and `area_done_ha`:
 
 ```json
 { "id": "…", "project_name": "Harbour Mapping", "…": "…",
-  "drones": [ { "id": 24, "code": "DJI Mavic 3-004", "drone_type": "DJI Mavic 3" } ],
+  "total_area_ha": 120.5, "area_done_ha": 30.0, "progress": 25,
+  "drones": [ { "id": 24, "code": "DJI Mavic 3-004", "drone_type": "DJI Mavic 3",
+               "status": "Operational", "area_done_ha": 12.0 } ],
   "total_drones": 3 }
 ```
 
@@ -256,14 +318,15 @@ available(drone) = NOT EXISTS (
 
 ## 8. Frontend structure
 
-Single-page app with three routes under a shared shell (`App.tsx` + nav):
+Single-page app with a shared shell (`App.tsx` + nav: Home / Book / Stock / Pilots):
 
 | Route | Page | Purpose |
 | --- | --- | --- |
 | `/` | `CalendarPage` | Home — month calendar with type/code filters, day detail panel, drones-per-type chart |
 | `/book` | `BookPage` | Table of all bookings; create/edit/delete |
-| `/book/new`, `/book/:id` | `NewBookingPage` | Create / edit form; picks specific units with live availability |
-| `/stock` | `StockPage` | Drone-type catalog + individual drone (code) management |
+| `/book/new`, `/book/:id` | `NewBookingPage` | Create / edit form; "total area (HA)" field, picks specific units with live availability; in edit mode a per-drone **daily progress** section (date + HA logging with a derived progress bar), a per-drone **pilot assignment** control (add-pilot dropdown + removable pilot chips, multiple pilots per drone), and can add a drone to "boost" |
+| `/stock` | `StockPage` | Drone-type catalog + individual drone (code) management, each with a Status dropdown (Standby/Operational/Incomplete) |
+| `/pilots` | `PilotsPage` | Manage pilot names (add/delete) and view a per-drone pilot history (pick a drone → which pilots flew it on which projects, with dates). Pilots are assigned to drones inside a booking's edit form. |
 
 Supporting modules:
 

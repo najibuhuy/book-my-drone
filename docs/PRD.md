@@ -5,7 +5,7 @@
 | **Product** | Book My Drone — drone booking dashboard |
 | **Status** | Implemented (v0.1) |
 | **Author** | Najib Alyasyfi (Najib.Alyasyfi@noovoleum.com) |
-| **Last updated** | 2026-09-18 |
+| **Last updated** | 2026-09-21 |
 | **Related docs** | [ARCHITECTURE.md](ARCHITECTURE.md) · [../README.md](../README.md) |
 
 ---
@@ -47,6 +47,15 @@ We need a lightweight tool that:
 - G4 — A drone cannot be reserved by two bookings whose dates overlap
   (**time-aware**, hotel-room model); the same drone frees up outside a booking.
 - G5 — Everything is persisted in PostgreSQL and configurable.
+- G6 — A booking records a **total area to cover (in hectares)**, and progress is
+  **derived** from the actual area completed rather than typed in by hand.
+- G7 — Each assigned drone logs **daily hectares completed**; the booking's
+  progress % is computed from the sum of those logs against the total area.
+- G8 — **Pilots** are assigned to a drone **within a project** (booking) —
+  **multiple pilots per drone per project** are allowed — and each drone keeps a
+  **pilot history across projects** (the dates come from the projects it flew).
+- G9 — Each drone carries an operational **status**
+  (Standby / Operational / Incomplete).
 
 ### Non-goals (v0.1)
 
@@ -78,6 +87,16 @@ We need a lightweight tool that:
 - **Availability (time-aware, per unit)** — a specific drone is free for a date
   window if it is not reserved by any OVERLAPPING booking. A drone booked outside
   a window is free inside it. This is the "hotel room" rule, per airframe.
+- **Area / progress** — a booking has a **total area to cover** in hectares
+  (`total_area_ha`). Progress is **derived, not entered**: it is
+  `round(area_done_ha / total_area_ha * 100)` (clamped 0..100), where
+  `area_done_ha` is the sum of the booking's per-drone daily logs.
+- **Drone status** — each drone (unit) has an operational status:
+  **Standby**, **Operational**, or **Incomplete** (default Standby), set per drone.
+- **Pilot / assignment history** — a **pilot** (unique name) is assigned to a
+  specific **drone within a booking (project)**; **multiple pilots per drone per
+  project** are allowed. Each drone keeps a **pilot history derived from the
+  bookings it flew** — each project supplies the dates.
 
 ## 6. Functional requirements
 
@@ -97,16 +116,26 @@ We need a lightweight tool that:
 ### 6.2 Book (list + create/edit) — G2, G3
 
 - FR-6 A table of all bookings: project, dates, the reserved drone codes, total,
-  vendor, PIC, progress, and Edit / Delete actions.
+  vendor, PIC, (derived) progress, and Edit / Delete actions.
 - FR-7 "New booking" opens a form; the same form edits an existing booking.
 - FR-8 The form captures: project name, vendor/booked-by, start date, end date,
-  PIC, progress (0–100 slider), description, and a **selection of specific drone
-  units**.
+  PIC, **total area to cover (HA)**, description, and a **selection of specific
+  drone units**. There is **no manual progress input** — progress is derived from
+  daily logs (see FR-17).
 - FR-9 The unit picker groups available drones by type; each free unit is a
   checkbox showing its code. Units already booked for the chosen dates are shown
   disabled. On edit, the booking's own units are pre-selected.
 - FR-10 If the availability lookup fails, the form still submits and relies on
   the server's authoritative check (never silently blocks).
+- FR-17 **Daily progress logging (edit mode).** In edit mode the form shows a
+  "Daily progress" section where each assigned drone logs **hectares completed per
+  day** (date + HA). Entries are upserted per `(drone, date)`. A **derived
+  progress bar** shows `round(area_done_ha / total_area_ha * 100)`. Each drone
+  also shows its own `area_done_ha`.
+- FR-18 **Boosting.** From the edit form, staff can **add another drone** to an
+  existing booking. Editing diffs the drone set — only removed units are dropped
+  and added ones inserted — so daily progress already logged for kept drones is
+  preserved.
 
 ### 6.3 Stock — G5
 
@@ -116,6 +145,9 @@ We need a lightweight tool that:
   drones).
 - FR-13 Register individual drones, each with a **unique code** and a type; list
   and delete them (delete blocked while a drone is reserved by a booking).
+- FR-19 Each drone has a **Status** dropdown
+  (**Standby** / **Operational** / **Incomplete**, default Standby), set and
+  updated per drone from the Stock page.
 
 ### 6.4 Booking enforcement — G4
 
@@ -127,17 +159,42 @@ We need a lightweight tool that:
 - FR-16 The check is race-safe: concurrent bookings of the same drone cannot both
   succeed (the drone rows are locked `FOR UPDATE` within the transaction).
 
+### 6.5 Pilots — G8
+
+- FR-20 A dedicated **Pilots** page (nav: Home / Book / Stock / Pilots, route
+  `/pilots`) manages **pilot names** — staff can **add / delete** pilots. Pilot
+  names are **unique**; a pilot still assigned to a drone cannot be deleted.
+- FR-21 Staff **assign one or more pilots to each drone inside a booking's edit
+  form**: each assigned drone has an add-pilot control (which filters out pilots
+  already on that drone) and removable pilot chips. There is **no standalone
+  date range** — a pilot is assigned to a drone within a project, and the
+  project's dates apply.
+- FR-22 The Pilots page includes a **per-drone pilot history** viewer: pick a
+  drone to see which pilots flew it on which projects, with dates. The history is
+  **derived from the bookings** the drone flew.
+
 ## 7. Business rules & validation
 
 - BR-1 `end_date ≥ start_date`.
-- BR-2 `progress` ∈ [0, 100].
+- BR-2 `progress` is **derived, never entered**:
+  `round(area_done_ha / total_area_ha * 100)`, clamped to [0, 100].
 - BR-3 A booking must reserve at least one drone.
 - BR-4 `project_name`, `vendor_name`, and `pic` are required (non-empty).
-- BR-5 Drone codes are unique; drone-type names are unique.
+- BR-5 Drone codes are unique; drone-type names are unique; **pilot names are
+  unique**.
 - BR-6 A drone must belong to a type that exists in the catalog.
 - BR-7 A drone may be reserved by at most one booking per overlapping window.
 - BR-8 Availability is inclusive-overlap: bookings overlap when
   `A.start ≤ B.end AND A.end ≥ B.start`.
+- BR-9 `total_area_ha ≥ 0` and each daily-progress `area_ha ≥ 0`.
+- BR-10 A daily-progress entry for a drone requires that drone to be **assigned
+  to the booking** (enforced by the composite FK to `booking_drone_units`); one
+  entry per `(booking, drone, date)`.
+- BR-11 `drones.status` must be one of Standby / Operational / Incomplete.
+- BR-12 A pilot can only be assigned to a drone that is **reserved by that
+  booking** (enforced by the composite FK to `booking_drone_units`).
+- BR-13 The same pilot cannot be assigned to the same drone twice in one booking
+  (`UNIQUE(booking_id, drone_id, pilot_id)`).
 
 ## 8. Representative user stories
 

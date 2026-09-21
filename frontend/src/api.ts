@@ -1,10 +1,15 @@
 import type {
+  AssignedPilot,
   Availability,
   Booking,
   BookingInput,
+  DailyProgress,
   Drone,
+  DronePilotHistory,
+  DroneStatus,
   DroneType,
   DroneTypeStat,
+  Pilot,
 } from "./types";
 
 const BASE = "/api";
@@ -42,26 +47,41 @@ export const api = {
     request<Booking>("/bookings", { method: "POST", body: JSON.stringify(input) }),
   updateBooking: (id: string, input: BookingInput) =>
     request<Booking>(`/bookings/${id}`, { method: "PUT", body: JSON.stringify(input) }),
-  deleteBooking: (id: string) =>
-    request<void>(`/bookings/${id}`, { method: "DELETE" }),
+  deleteBooking: (id: string) => request<void>(`/bookings/${id}`, { method: "DELETE" }),
 
-  // Drone types (categories)
+  // Daily progress (per drone per day, area in HA)
+  listDailyProgress: (bookingId: string) =>
+    request<DailyProgress[]>(`/bookings/${bookingId}/daily-progress`),
+  saveDailyProgress: (
+    bookingId: string,
+    entry: { drone_id: number; entry_date: string; area_ha: number },
+  ) =>
+    request<DailyProgress>(`/bookings/${bookingId}/daily-progress`, {
+      method: "POST",
+      body: JSON.stringify(entry),
+    }),
+  deleteDailyProgress: (id: number) =>
+    request<void>(`/daily-progress/${id}`, { method: "DELETE" }),
+
+  // Drone types
   listDroneTypes: () => request<DroneType[]>("/drone-types"),
   createDroneType: (name: string) =>
     request<DroneType>("/drone-types", { method: "POST", body: JSON.stringify({ name }) }),
   updateDroneType: (id: number, name: string) =>
     request<DroneType>(`/drone-types/${id}`, { method: "PUT", body: JSON.stringify({ name }) }),
-  deleteDroneType: (id: number) =>
-    request<void>(`/drone-types/${id}`, { method: "DELETE" }),
+  deleteDroneType: (id: number) => request<void>(`/drone-types/${id}`, { method: "DELETE" }),
 
-  // Drones (individual units with codes)
+  // Drones (units + status)
   listDrones: () => request<Drone[]>("/drones"),
-  createDrone: (code: string, drone_type: string) =>
-    request<Drone>("/drones", { method: "POST", body: JSON.stringify({ code, drone_type }) }),
-  updateDrone: (id: number, code: string, drone_type: string) =>
+  createDrone: (code: string, drone_type: string, status: DroneStatus = "Standby") =>
+    request<Drone>("/drones", {
+      method: "POST",
+      body: JSON.stringify({ code, drone_type, status }),
+    }),
+  updateDrone: (id: number, code: string, drone_type: string, status: DroneStatus) =>
     request<Drone>(`/drones/${id}`, {
       method: "PUT",
-      body: JSON.stringify({ code, drone_type }),
+      body: JSON.stringify({ code, drone_type, status }),
     }),
   deleteDrone: (id: number) => request<void>(`/drones/${id}`, { method: "DELETE" }),
 
@@ -71,6 +91,25 @@ export const api = {
     if (exclude) params.set("exclude", exclude);
     return request<Availability[]>(`/availability?${params.toString()}`);
   },
+
+  // Pilots (names)
+  listPilots: () => request<Pilot[]>("/pilots"),
+  createPilot: (name: string) =>
+    request<Pilot>("/pilots", { method: "POST", body: JSON.stringify({ name }) }),
+  deletePilot: (id: number) => request<void>(`/pilots/${id}`, { method: "DELETE" }),
+
+  // Pilots assigned to a drone within a booking (project-scoped, multi-pilot)
+  assignDronePilot: (bookingId: string, drone_id: number, pilot_id: number) =>
+    request<AssignedPilot>(`/bookings/${bookingId}/drone-pilots`, {
+      method: "POST",
+      body: JSON.stringify({ drone_id, pilot_id }),
+    }),
+  unassignDronePilot: (assignmentId: number) =>
+    request<void>(`/booking-drone-pilots/${assignmentId}`, { method: "DELETE" }),
+
+  // A drone's pilot history (derived from the projects it flew)
+  dronePilotHistory: (droneId: number) =>
+    request<DronePilotHistory[]>(`/drones/${droneId}/pilot-history`),
 
   // Stats
   stats: () => request<DroneTypeStat[]>("/stats"),

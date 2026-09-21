@@ -6,6 +6,7 @@ import CalendarPage from "./pages/CalendarPage";
 import BookPage from "./pages/BookPage";
 import NewBookingPage from "./pages/NewBookingPage";
 import StockPage from "./pages/StockPage";
+import PilotsPage from "./pages/PilotsPage";
 import "./index.css";
 
 const router = createBrowserRouter([
@@ -18,6 +19,7 @@ const router = createBrowserRouter([
       { path: "book/new", element: <NewBookingPage /> },
       { path: "book/:id", element: <NewBookingPage /> },
       { path: "stock", element: <StockPage /> },
+      { path: "pilots", element: <PilotsPage /> },
     ],
   },
 ]);

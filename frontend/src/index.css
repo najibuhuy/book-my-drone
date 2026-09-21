@@ -763,3 +763,93 @@ body {
 .tag-x:hover {
   color: var(--danger);
 }
+
+/* ---------- Daily progress + pilot assign forms ---------- */
+.daily-add,
+.assign-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.daily-add select,
+.daily-add input,
+.assign-form select,
+.assign-form input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+}
+.daily-add input[type="number"] {
+  width: 120px;
+}
+.assign-dates {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+/* ---------- Pilots per drone (booking edit) ---------- */
+.pilot-assign-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.pilot-assign-row {
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.pilot-assign-drone {
+  font-weight: 600;
+}
+.pilot-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.pilot-add {
+  display: flex;
+  gap: 6px;
+}
+.pilot-add select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--surface);
+}
+
+/* ---------- Drone status control ---------- */
+.status-select {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.status--standby {
+  background: #f1f5f9;
+  color: #475569;
+}
+.status--operational {
+  background: #dcfce7;
+  color: #166534;
+}
+.status--incomplete {
+  background: #fef3c7;
+  color: #92400e;
+}

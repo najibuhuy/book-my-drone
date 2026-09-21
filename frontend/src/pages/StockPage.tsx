@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Drone, DroneType } from "../types";
+import type { Drone, DroneStatus, DroneType } from "../types";
 import { colorFor } from "../lib/color";
+
+const STATUSES: DroneStatus[] = ["Standby", "Operational", "Incomplete"];
 
 export default function StockPage() {
   const [types, setTypes] = useState<DroneType[]>([]);
@@ -79,6 +81,16 @@ export default function StockPage() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not add drone");
+    }
+  }
+
+  async function changeStatus(d: Drone, status: DroneStatus) {
+    setError(null);
+    try {
+      await api.updateDrone(d.id, d.code, d.drone_type, status);
+      setDrones((prev) => prev.map((x) => (x.id === d.id ? { ...x, status } : x)));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update status");
     }
   }
 
@@ -217,6 +229,7 @@ export default function StockPage() {
                   <tr>
                     <th>Code</th>
                     <th>Type</th>
+                    <th>Status</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -230,6 +243,19 @@ export default function StockPage() {
                           style={{ background: colorFor(d.drone_type) }}
                         />
                         {d.drone_type}
+                      </td>
+                      <td>
+                        <select
+                          className={`status-select status--${d.status.toLowerCase()}`}
+                          value={d.status}
+                          onChange={(e) => changeStatus(d, e.target.value as DroneStatus)}
+                        >
+                          {STATUSES.map((s) => (
+                            <option key={s} value={s}>
+                              {s}
+                            </option>
+                          ))}
+                        </select>
                       </td>
                       <td className="nowrap">
                         <button

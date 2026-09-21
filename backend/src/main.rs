@@ -78,6 +78,34 @@ async fn main() -> anyhow::Result<()> {
                 .put(handlers::update_booking)
                 .delete(handlers::delete_booking),
         )
+        .route(
+            "/api/bookings/{id}/daily-progress",
+            get(handlers::list_daily_progress).post(handlers::upsert_daily_progress),
+        )
+        .route(
+            "/api/daily-progress/{id}",
+            axum::routing::delete(handlers::delete_daily_progress),
+        )
+        .route(
+            "/api/pilots",
+            get(handlers::list_pilots).post(handlers::create_pilot),
+        )
+        .route(
+            "/api/pilots/{id}",
+            axum::routing::delete(handlers::delete_pilot),
+        )
+        .route(
+            "/api/bookings/{id}/drone-pilots",
+            axum::routing::post(handlers::assign_drone_pilot),
+        )
+        .route(
+            "/api/booking-drone-pilots/{id}",
+            axum::routing::delete(handlers::delete_drone_pilot),
+        )
+        .route(
+            "/api/drones/{id}/pilot-history",
+            get(handlers::drone_pilot_history),
+        )
         .route("/api/stats", get(handlers::stats))
         .with_state(state)
         .layer(cors)

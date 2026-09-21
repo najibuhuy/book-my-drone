@@ -63,7 +63,9 @@ export default function BookingDetail({ date, bookings, onDeleted }: Props) {
                   key={d.id}
                   className="drone-tag mono"
                   style={{ borderColor: colorFor(d.drone_type) }}
-                  title={d.drone_type}
+                  title={`${d.drone_type} · ${d.status} · ${d.area_done_ha.toFixed(1)} HA done${
+                    d.pilots.length ? ` · pilots: ${d.pilots.map((p) => p.name).join(", ")}` : ""
+                  }`}
                 >
                   {d.code}
                 </span>
@@ -75,6 +77,12 @@ export default function BookingDetail({ date, bookings, onDeleted }: Props) {
                 <dt>Dates</dt>
                 <dd>
                   {prettyDate(b.start_date)} → {prettyDate(b.end_date)}
+                </dd>
+              </div>
+              <div>
+                <dt>Area</dt>
+                <dd>
+                  {b.area_done_ha.toFixed(1)} / {b.total_area_ha.toFixed(1)} HA
                 </dd>
               </div>
               <div>
