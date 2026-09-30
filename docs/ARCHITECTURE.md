@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Implemented (v0.1) |
-| **Last updated** | 2026-09-21 |
+| **Last updated** | 2026-09-30 |
 | **Related docs** | [PRD.md](PRD.md) · [../README.md](../README.md) |
 
 ---
@@ -98,7 +98,9 @@ erDiagram
     date        end_date
     text        vendor_name
     text        description
-    double      total_area_ha "total area to cover (HA)"
+    text        project_type "CHECK Bagworm|Foliar|Oryctes|Fertilizer|Forestry|Trial"
+    double      area_to_cover_ha "base area (HA)"
+    int         qty_rotation "CHECK >= 1, default 1 (Oryctes)"
     text        pic
     timestamptz created_at
     timestamptz updated_at
@@ -139,11 +141,19 @@ erDiagram
   stable `id`, so renames never touch reservations.
 - **`ON DELETE CASCADE` on `booking_id`** — deleting a booking frees its units.
   **`ON DELETE RESTRICT` on `drone_id`** — a reserved drone can't be deleted.
-- **Check constraints** (valid date range, `drones.status` in the allowed set)
+- **Check constraints** (valid date range, `drones.status` and
+  `bookings.project_type` in their allowed sets, `bookings.qty_rotation >= 1`)
   and uniqueness (`drone.code`, `drone_type.name`, `pilots.name`, and
   `booking_drone_pilots(booking_id, drone_id, pilot_id)`) enforce invariants
   regardless of the caller.
-- **Progress is derived, not entered.** A booking's `progress` % is computed as
+- **Project type and rotation.** Each booking has a `project_type` (`CHECK` in
+  Bagworm / Foliar / Oryctes / Fertilizer / Forestry / Trial, default Foliar) and
+  a `qty_rotation` (`CHECK >= 1`, default 1). Rotation is only meaningful for
+  **Oryctes** projects; it is 1 for every other type.
+- **Total area and progress are derived, not stored/entered.** The stored base
+  area is `area_to_cover_ha`; the **total area to cover** is derived as
+  `total_area_ha = area_to_cover_ha × qty_rotation` (returned in the booking
+  JSON, not a column). A booking's `progress` % is computed as
   `round(area_done_ha / total_area_ha * 100)` (clamped 0..100), where
   `area_done_ha` is the sum of that booking's `drone_daily_progress` rows. Each
   assigned drone logs hectares completed per day, upserted on
@@ -180,6 +190,7 @@ Applied in order at startup by `sqlx::migrate!`:
 | `0005_drone_units.sql` | `drones` (unique code) + `booking_drone_units`; migrate counts → specific units (overlap-aware, fails loudly if infeasible); drop `booking_drones` and `total_quantity` |
 | `0006_area_progress_pilots.sql` | bookings.total_area_ha (+drop progress); drones.status; drone_daily_progress; pilots + drone_pilot_assignments |
 | `0007_project_pilots.sql` | replace standalone drone_pilot_assignments with project-scoped booking_drone_pilots (multi-pilot per drone per booking) |
+| `0008_project_type_rotation.sql` | rename bookings.total_area_ha → area_to_cover_ha; add qty_rotation (CHECK ≥ 1, default 1) and project_type (CHECK in the six types, default Foliar) |
 
 ## 5. API reference
 
@@ -190,7 +201,7 @@ Base path `/api`. All bodies are JSON.
 | GET | `/health` | Liveness |
 | GET | `/bookings?start=&end=` | List bookings overlapping the window (both optional) |
 | POST | `/bookings` | Create a booking (reserves specific units) |
-| GET | `/bookings/{id}` | Fetch one booking (incl. `total_area_ha`, `area_done_ha`, derived `progress`, `drones[]` with `status`, `area_done_ha`, and assigned `pilots[]`) |
+| GET | `/bookings/{id}` | Fetch one booking (incl. `project_type`, `area_to_cover_ha`, `qty_rotation`, derived `total_area_ha`, `area_done_ha`, derived `progress`, `drones[]` with `status`, `area_done_ha`, and assigned `pilots[]`) |
 | PUT | `/bookings/{id}` | Update a booking (diffs its reserved units — kept units keep their daily logs; can add a drone to "boost") |
 | DELETE | `/bookings/{id}` | Delete a booking (frees its units) |
 | GET | `/bookings/{id}/daily-progress` | List a booking's per-drone daily progress rows |
@@ -223,11 +234,17 @@ Base path `/api`. All bodies are JSON.
   "end_date": "2026-09-28",
   "vendor_name": "AeroWorks",
   "description": "Multi-fleet survey",
-  "total_area_ha": 120.5,
+  "project_type": "Oryctes",
+  "area_to_cover_ha": 40.25,
+  "qty_rotation": 3,
   "pic": "Rina",
   "drone_ids": [24, 25, 11]
 }
 ```
+
+`qty_rotation` defaults to 1 if omitted; an unknown `project_type` or a
+`qty_rotation < 1` returns `400`. `total_area_ha` is **not** sent — the response
+includes it derived as `area_to_cover_ha × qty_rotation`.
 
 Responses return the reserved units, a computed total, the target/covered area,
 and the **derived** progress. `progress` is not sent in the body — it is computed
@@ -236,7 +253,8 @@ Each entry in `drones[]` carries its `status` and `area_done_ha`:
 
 ```json
 { "id": "…", "project_name": "Harbour Mapping", "…": "…",
-  "total_area_ha": 120.5, "area_done_ha": 30.0, "progress": 25,
+  "project_type": "Oryctes", "area_to_cover_ha": 40.25, "qty_rotation": 3,
+  "total_area_ha": 120.75, "area_done_ha": 30.0, "progress": 25,
   "drones": [ { "id": 24, "code": "DJI Mavic 3-004", "drone_type": "DJI Mavic 3",
                "status": "Operational", "area_done_ha": 12.0 } ],
   "total_drones": 3 }
@@ -322,9 +340,9 @@ Single-page app with a shared shell (`App.tsx` + nav: Home / Book / Stock / Pilo
 
 | Route | Page | Purpose |
 | --- | --- | --- |
-| `/` | `CalendarPage` | Home — month calendar with type/code filters, day detail panel, drones-per-type chart |
-| `/book` | `BookPage` | Table of all bookings; create/edit/delete |
-| `/book/new`, `/book/:id` | `NewBookingPage` | Create / edit form; "total area (HA)" field, picks specific units with live availability; in edit mode a per-drone **daily progress** section (date + HA logging with a derived progress bar), a per-drone **pilot assignment** control (add-pilot dropdown + removable pilot chips, multiple pilots per drone), and can add a drone to "boost" |
+| `/` | `CalendarPage` | Home — month calendar with type/code filters, day detail panel (with project type badge), a **"Drones on this day"** summary (available vs in use, with codes; ignores the calendar filters), drones-per-type chart |
+| `/book` | `BookPage` | Project summary table of all bookings — incl. a project **Type** badge and a client-side **Est. finish** column (rate = area done ÷ days elapsed; ETA vs scheduled end: on track / behind / Complete / "by *end date*" if not started); create/edit/delete |
+| `/book/new`, `/book/:id` | `NewBookingPage` | Create / edit form; **Project type** dropdown, "Area to cover (HA)" field, a **Qty rotation** field shown only for Oryctes, and a read-only derived "Total area to cover (HA)" (area × rotation); areas/daily HA accept 2 decimals; picks specific units with live availability; in edit mode a per-drone **daily progress** section (date + HA logging with a derived progress bar), a per-drone **pilot assignment** control (add-pilot dropdown + removable pilot chips, multiple pilots per drone), and can add a drone to "boost" |
 | `/stock` | `StockPage` | Drone-type catalog + individual drone (code) management, each with a Status dropdown (Standby/Operational/Incomplete) |
 | `/pilots` | `PilotsPage` | Manage pilot names (add/delete) and view a per-drone pilot history (pick a drone → which pilots flew it on which projects, with dates). Pilots are assigned to drones inside a booking's edit form. |
 

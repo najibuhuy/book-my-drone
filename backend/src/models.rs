@@ -116,30 +116,53 @@ impl DroneTypeInput {
 // Bookings
 // ---------------------------------------------------------------------------
 
+pub const PROJECT_TYPES: [&str; 6] = [
+    "Bagworm",
+    "Foliar",
+    "Oryctes",
+    "Fertilizer",
+    "Forestry",
+    "Trial",
+];
+
+fn default_project_type() -> String {
+    "Foliar".to_string()
+}
+
+fn default_qty_rotation() -> i32 {
+    1
+}
+
 #[derive(Debug, FromRow)]
 pub struct BookingBase {
     pub id: Uuid,
     pub project_name: String,
+    pub project_type: String,
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
     pub vendor_name: String,
     pub description: String,
-    pub total_area_ha: f64,
+    pub area_to_cover_ha: f64,
+    pub qty_rotation: i32,
     pub pic: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 /// Full booking: base fields, the reserved drone units (with per-drone area),
-/// the total area to cover, the area done so far, and derived progress %.
+/// the area to cover (× rotation = total), the area done, and derived progress %.
 #[derive(Debug, Serialize)]
 pub struct Booking {
     pub id: Uuid,
     pub project_name: String,
+    pub project_type: String,
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
     pub vendor_name: String,
     pub description: String,
+    pub area_to_cover_ha: f64,
+    pub qty_rotation: i32,
+    /// Derived: area_to_cover_ha × qty_rotation. Denominator for progress.
     pub total_area_ha: f64,
     pub area_done_ha: f64,
     pub progress: i32,
@@ -161,16 +184,20 @@ pub fn compute_progress(area_done: f64, total_area: f64) -> i32 {
 impl Booking {
     pub fn from_parts(base: BookingBase, drones: Vec<BookedDrone>) -> Self {
         let area_done: f64 = drones.iter().map(|d| d.area_done_ha).sum();
+        let total_area = base.area_to_cover_ha * base.qty_rotation as f64;
         Booking {
             id: base.id,
             project_name: base.project_name,
+            project_type: base.project_type,
             start_date: base.start_date,
             end_date: base.end_date,
             vendor_name: base.vendor_name,
             description: base.description,
-            total_area_ha: base.total_area_ha,
+            area_to_cover_ha: base.area_to_cover_ha,
+            qty_rotation: base.qty_rotation,
+            total_area_ha: total_area,
             area_done_ha: area_done,
-            progress: compute_progress(area_done, base.total_area_ha),
+            progress: compute_progress(area_done, total_area),
             pic: base.pic,
             total_drones: drones.len() as i32,
             drones,
@@ -183,13 +210,17 @@ impl Booking {
 #[derive(Debug, Deserialize)]
 pub struct BookingInput {
     pub project_name: String,
+    #[serde(default = "default_project_type")]
+    pub project_type: String,
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
     pub vendor_name: String,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
-    pub total_area_ha: f64,
+    pub area_to_cover_ha: f64,
+    #[serde(default = "default_qty_rotation")]
+    pub qty_rotation: i32,
     pub pic: String,
     pub drone_ids: Vec<i32>,
 }
@@ -198,6 +229,9 @@ impl BookingInput {
     pub fn validate(&self) -> Result<(), String> {
         if self.project_name.trim().is_empty() {
             return Err("project_name is required".into());
+        }
+        if !PROJECT_TYPES.contains(&self.project_type.as_str()) {
+            return Err("project_type is not one of the allowed values".into());
         }
         if self.vendor_name.trim().is_empty() {
             return Err("vendor_name is required".into());
@@ -208,8 +242,11 @@ impl BookingInput {
         if self.end_date < self.start_date {
             return Err("end_date must be on or after start_date".into());
         }
-        if self.total_area_ha < 0.0 {
-            return Err("total_area_ha cannot be negative".into());
+        if self.area_to_cover_ha < 0.0 {
+            return Err("area_to_cover_ha cannot be negative".into());
+        }
+        if self.qty_rotation < 1 {
+            return Err("qty_rotation must be at least 1".into());
         }
         if self.drone_ids.is_empty() {
             return Err("select at least one drone".into());

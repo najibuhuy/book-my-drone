@@ -11,13 +11,18 @@ Four pages:
 - **Home** — a month calendar, **filterable by drone type and unique code**.
   Click any day to see the bookings on that date (project, vendor, PIC, dates,
   progress, and the reserved drone codes), plus a chart of drones booked per type.
-- **Book** — a table of all bookings, with create / edit / delete. A booking
-  reserves **specific drones** (picked by code) and records a **total area to
-  cover (HA)**; the form shows **live availability** for the chosen dates and
-  greys out units already taken. Progress is **not typed in** — in edit mode you
-  log **per-drone daily hectares**, and the booking's progress is **derived** from
-  those logs. You can also **add another drone** ("boost") to an existing booking
-  without losing logged progress.
+  Selecting a day also shows a **"Drones on this day"** summary — how many drones
+  are **available** vs **in use** that day, with their codes.
+- **Book** — a project summary table (with **Type** and **Est. finish** columns)
+  plus create / edit / delete. A booking has a **project type** (Bagworm, Foliar,
+  Oryctes, Fertilizer, Forestry, Trial), reserves **specific drones** (picked by
+  code), and records an **area to cover (HA)**; for **Oryctes** a **Qty rotation**
+  applies, and the total area = area × rotation. The form shows **live
+  availability** for the chosen dates and greys out units already taken. Progress
+  is **not typed in** — in edit mode you log **per-drone daily hectares** (up to
+  2 decimals), and the booking's progress is **derived** from those logs. You can
+  also **add another drone** ("boost") without losing logged progress. The
+  estimated finish uses the progress rate so far vs the scheduled end date.
 - **Stock** — manage the drone-type catalog **and register individual drones,
   each with a unique code** (e.g. `MAV-001`), with an "in use / free today"
   snapshot per type. Each drone has a **Status** (Standby / Operational /
@@ -96,7 +101,7 @@ The frontend proxy target can be overridden with `VITE_API_TARGET`.
 | `GET`    | `/api/health`          | Health check                                 |
 | `GET`    | `/api/bookings`        | List bookings (`?start=&end=` to filter)     |
 | `POST`   | `/api/bookings`        | Create a booking                             |
-| `GET`    | `/api/bookings/:id`    | Get one booking (incl. `total_area_ha`, `area_done_ha`, derived `progress`) |
+| `GET`    | `/api/bookings/:id`    | Get one booking (incl. `project_type`, `area_to_cover_ha`, `qty_rotation`, derived `total_area_ha` and `progress`) |
 | `PUT`    | `/api/bookings/:id`    | Update a booking (diffs its units; keeps daily logs; can "boost") |
 | `DELETE` | `/api/bookings/:id`    | Delete a booking                             |
 | `GET`    | `/api/bookings/:id/daily-progress` | List a booking's per-drone daily progress |
@@ -130,16 +135,20 @@ A booking reserves specific drone units by id (`drone_ids[]`):
   "end_date": "2026-09-28",
   "vendor_name": "AeroWorks",
   "description": "Multi-fleet survey",
-  "total_area_ha": 120.5,
+  "project_type": "Oryctes",
+  "area_to_cover_ha": 40.25,
+  "qty_rotation": 3,
   "pic": "Rina",
   "drone_ids": [24, 25, 11]
 }
 ```
 
-Progress is **not** part of the payload — it is **derived** from the per-drone
-daily HA logs (`round(area_done_ha / total_area_ha * 100)`). Responses return the
-reserved units in `drones[]` (each with its `status` and `area_done_ha`) plus a
-computed `total_drones`, `area_done_ha`, and derived `progress`.
+`qty_rotation` defaults to 1 (it only matters for Oryctes). The total area is
+**derived** — `total_area_ha = area_to_cover_ha × qty_rotation` — and returned in
+the response. Progress is **not** part of the payload either: it is derived from
+the per-drone daily HA logs (`round(area_done_ha / total_area_ha * 100)`).
+Responses return the reserved units in `drones[]` (each with its `status`,
+`area_done_ha`, and `pilots`) plus `total_drones`, `area_done_ha`, and `progress`.
 
 ## Project layout
 

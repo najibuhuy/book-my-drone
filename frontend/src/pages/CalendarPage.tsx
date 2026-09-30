@@ -99,6 +99,24 @@ export default function CalendarPage() {
   }, [grid, filtered]);
 
   const selectedBookings = selected ? byDay.get(selected) ?? [] : [];
+
+  // #6 — drones available vs in use on the selected day (across ALL bookings,
+  // not the filtered view). A drone is "in use" if any booking overlapping the
+  // day reserves it.
+  const dayAvailability = useMemo(() => {
+    if (!selected) return null;
+    const bookedIds = new Set<number>();
+    for (const b of bookings) {
+      if (dateInRange(selected, b.start_date, b.end_date)) {
+        for (const d of b.drones) bookedIds.add(d.id);
+      }
+    }
+    return {
+      inUse: drones.filter((d) => bookedIds.has(d.id)),
+      free: drones.filter((d) => !bookedIds.has(d.id)),
+    };
+  }, [selected, bookings, drones]);
+
   const today = new Date();
   const filtering = Boolean(filterType || filterCode);
 
@@ -217,7 +235,58 @@ export default function CalendarPage() {
         </div>
       </section>
 
-      <BookingDetail date={selected} bookings={selectedBookings} onDeleted={() => load()} />
+      <div className="calendar-side">
+        {dayAvailability && (
+          <div className="detail avail-summary">
+            <h2 className="detail-title">Drones on this day</h2>
+            <div className="avail-counts">
+              <div className="avail-stat avail-stat--ok">
+                <span className="avail-num">{dayAvailability.free.length}</span>
+                <span className="avail-label">available</span>
+              </div>
+              <div className="avail-stat avail-stat--busy">
+                <span className="avail-num">{dayAvailability.inUse.length}</span>
+                <span className="avail-label">in use</span>
+              </div>
+            </div>
+            {dayAvailability.inUse.length > 0 && (
+              <div className="avail-group">
+                <span className="avail-group-head">In use</span>
+                <div className="drone-tags">
+                  {dayAvailability.inUse.map((d) => (
+                    <span
+                      key={d.id}
+                      className="drone-tag mono"
+                      style={{ borderColor: colorFor(d.drone_type) }}
+                      title={d.drone_type}
+                    >
+                      {d.code}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {dayAvailability.free.length > 0 && (
+              <div className="avail-group">
+                <span className="avail-group-head">Available</span>
+                <div className="drone-tags">
+                  {dayAvailability.free.map((d) => (
+                    <span
+                      key={d.id}
+                      className="drone-tag mono avail-free"
+                      style={{ borderColor: colorFor(d.drone_type) }}
+                      title={d.drone_type}
+                    >
+                      {d.code}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        <BookingDetail date={selected} bookings={selectedBookings} onDeleted={() => load()} />
+      </div>
     </div>
   );
 }

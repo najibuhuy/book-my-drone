@@ -5,7 +5,7 @@
 | **Product** | Book My Drone — drone booking dashboard |
 | **Status** | Implemented (v0.1) |
 | **Author** | Najib Alyasyfi (Najib.Alyasyfi@noovoleum.com) |
-| **Last updated** | 2026-09-21 |
+| **Last updated** | 2026-09-30 |
 | **Related docs** | [ARCHITECTURE.md](ARCHITECTURE.md) · [../README.md](../README.md) |
 
 ---
@@ -47,8 +47,9 @@ We need a lightweight tool that:
 - G4 — A drone cannot be reserved by two bookings whose dates overlap
   (**time-aware**, hotel-room model); the same drone frees up outside a booking.
 - G5 — Everything is persisted in PostgreSQL and configurable.
-- G6 — A booking records a **total area to cover (in hectares)**, and progress is
-  **derived** from the actual area completed rather than typed in by hand.
+- G6 — A booking records an **area to cover (in hectares)**; the **total area to
+  cover** is derived from it (× rotation, see G11), and progress is **derived**
+  from the actual area completed rather than typed in by hand.
 - G7 — Each assigned drone logs **daily hectares completed**; the booking's
   progress % is computed from the sum of those logs against the total area.
 - G8 — **Pilots** are assigned to a drone **within a project** (booking) —
@@ -56,6 +57,15 @@ We need a lightweight tool that:
   **pilot history across projects** (the dates come from the projects it flew).
 - G9 — Each drone carries an operational **status**
   (Standby / Operational / Incomplete).
+- G10 — Each booking is classified by **project type**
+  (Bagworm / Foliar / Oryctes / Fertilizer / Forestry / Trial).
+- G11 — **Oryctes** projects record a **qty rotation** (how many passes over the
+  area); total area to cover = area to cover × rotation.
+- G12 — The Home page shows, for a selected day, how many drones are
+  **available vs in use**, with their codes.
+- G13 — The Book page is a **project summary** that estimates each project's
+  **finish date** from its actual pace and flags whether it is on track against
+  the scheduled end date.
 
 ### Non-goals (v0.1)
 
@@ -87,10 +97,19 @@ We need a lightweight tool that:
 - **Availability (time-aware, per unit)** — a specific drone is free for a date
   window if it is not reserved by any OVERLAPPING booking. A drone booked outside
   a window is free inside it. This is the "hotel room" rule, per airframe.
-- **Area / progress** — a booking has a **total area to cover** in hectares
-  (`total_area_ha`). Progress is **derived, not entered**: it is
-  `round(area_done_ha / total_area_ha * 100)` (clamped 0..100), where
-  `area_done_ha` is the sum of the booking's per-drone daily logs.
+- **Area / progress** — a booking has an **area to cover** in hectares
+  (`area_to_cover_ha`) and a **qty rotation** (`qty_rotation`, 1 unless Oryctes).
+  The **total area to cover** is derived: `total_area_ha = area_to_cover_ha ×
+  qty_rotation`, and it is the progress denominator. Progress is **derived, not
+  entered**: it is `round(area_done_ha / total_area_ha * 100)` (clamped 0..100),
+  where `area_done_ha` is the sum of the booking's per-drone daily logs.
+- **Project type** — each booking is one of **Bagworm**, **Foliar**, **Oryctes**,
+  **Fertilizer**, **Forestry**, or **Trial** (default Foliar). Only Oryctes uses
+  a rotation count other than 1.
+- **Estimated finish** — a rate-based ETA computed on the Book page: rate =
+  `area_done_ha ÷ days elapsed since start_date`; ETA = today + remaining area ÷
+  rate. It is compared against the scheduled `end_date` (on track if ETA ≤ end
+  date, behind otherwise).
 - **Drone status** — each drone (unit) has an operational status:
   **Standby**, **Operational**, or **Incomplete** (default Standby), set per drone.
 - **Pilot / assignment history** — a **pilot** (unique name) is assigned to a
@@ -115,13 +134,18 @@ We need a lightweight tool that:
 
 ### 6.2 Book (list + create/edit) — G2, G3
 
-- FR-6 A table of all bookings: project, dates, the reserved drone codes, total,
-  vendor, PIC, (derived) progress, and Edit / Delete actions.
+- FR-6 A table of all bookings: project, type, dates, the reserved drone codes,
+  total, PIC, (derived) progress, estimated finish, and Edit / Delete actions
+  (see FR-24).
 - FR-7 "New booking" opens a form; the same form edits an existing booking.
-- FR-8 The form captures: project name, vendor/booked-by, start date, end date,
-  PIC, **total area to cover (HA)**, description, and a **selection of specific
-  drone units**. There is **no manual progress input** — progress is derived from
-  daily logs (see FR-17).
+- FR-8 The form captures: project name, **project type** (dropdown: Bagworm /
+  Foliar / Oryctes / Fertilizer / Forestry / Trial), vendor/booked-by, start
+  date, end date, PIC, **Area to cover (HA)**, description, and a **selection of
+  specific drone units**. When the type is **Oryctes**, a **Qty rotation** field
+  appears; switching to another type resets it to 1. A read-only **Total area to
+  cover (HA)** shows `area × rotation`. Area inputs accept 2 decimal places.
+  There is **no manual progress input** — progress is derived from daily logs
+  (see FR-17).
 - FR-9 The unit picker groups available drones by type; each free unit is a
   checkbox showing its code. Units already booked for the chosen dates are shown
   disabled. On edit, the booking's own units are pre-selected.
@@ -129,7 +153,8 @@ We need a lightweight tool that:
   the server's authoritative check (never silently blocks).
 - FR-17 **Daily progress logging (edit mode).** In edit mode the form shows a
   "Daily progress" section where each assigned drone logs **hectares completed per
-  day** (date + HA). Entries are upserted per `(drone, date)`. A **derived
+  day** (date + HA, **2 decimal places**, step 0.01; values display with 2
+  decimals). Entries are upserted per `(drone, date)`. A **derived
   progress bar** shows `round(area_done_ha / total_area_ha * 100)`. Each drone
   also shows its own `area_done_ha`.
 - FR-18 **Boosting.** From the edit form, staff can **add another drone** to an
@@ -173,6 +198,21 @@ We need a lightweight tool that:
   drone to see which pilots flew it on which projects, with dates. The history is
   **derived from the bookings** the drone flew.
 
+### 6.6 Day availability & project summary — G10–G13
+
+- FR-23 **Drones on this day.** Selecting a day on the Home page shows a summary
+  card with the count of drones **available** vs **in use** that day, listing
+  each group's drone codes. "In use" means reserved by any booking overlapping
+  that day, **regardless of the calendar filters**. The day detail card also
+  shows each booking's project type badge.
+- FR-24 **Project summary (Book page).** The bookings table includes a **Type**
+  column (project type badge) and an **Est. finish** column computed
+  client-side (see *Estimated finish*): shown green when the ETA is on or before
+  the scheduled end date ("on track"), red when later ("behind"), "Complete" at
+  100%, and "by *end date*" when the project has not started yet. (The Vendor
+  column is omitted from this table; drone chip tooltips include assigned
+  pilots.)
+
 ## 7. Business rules & validation
 
 - BR-1 `end_date ≥ start_date`.
@@ -186,7 +226,7 @@ We need a lightweight tool that:
 - BR-7 A drone may be reserved by at most one booking per overlapping window.
 - BR-8 Availability is inclusive-overlap: bookings overlap when
   `A.start ≤ B.end AND A.end ≥ B.start`.
-- BR-9 `total_area_ha ≥ 0` and each daily-progress `area_ha ≥ 0`.
+- BR-9 `area_to_cover_ha ≥ 0` and each daily-progress `area_ha ≥ 0`.
 - BR-10 A daily-progress entry for a drone requires that drone to be **assigned
   to the booking** (enforced by the composite FK to `booking_drone_units`); one
   entry per `(booking, drone, date)`.
@@ -195,6 +235,14 @@ We need a lightweight tool that:
   booking** (enforced by the composite FK to `booking_drone_units`).
 - BR-13 The same pilot cannot be assigned to the same drone twice in one booking
   (`UNIQUE(booking_id, drone_id, pilot_id)`).
+- BR-14 `project_type` must be one of Bagworm / Foliar / Oryctes / Fertilizer /
+  Forestry / Trial (otherwise `400`).
+- BR-15 `qty_rotation ≥ 1` (otherwise `400`); the UI keeps it at 1 for
+  non-Oryctes projects.
+- BR-16 `total_area_ha` is **derived, never stored or sent**:
+  `total_area_ha = area_to_cover_ha × qty_rotation`.
+- BR-17 Area values (`area_to_cover_ha`, daily `area_ha`) may have up to 2
+  decimal places.
 
 ## 8. Representative user stories
 

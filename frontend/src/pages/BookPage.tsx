@@ -3,8 +3,33 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Booking } from "../types";
 import { colorFor } from "../lib/color";
-import { prettyDate } from "../lib/date";
+import { parseISO, prettyDate, toISO } from "../lib/date";
 import ProgressBar from "../components/ProgressBar";
+
+type Est = { label: string; tone: "ok" | "behind" | "done" | "none" };
+
+/**
+ * Estimate a project's finish date from its progress rate vs schedule:
+ * rate = area done / days elapsed; ETA = today + remaining/rate. On track if
+ * the ETA lands on or before the scheduled end date.
+ */
+function estimateFinish(b: Booking): Est {
+  if (b.progress >= 100) return { label: "Complete", tone: "done" };
+  const msDay = 86_400_000;
+  const today = new Date();
+  const start = parseISO(b.start_date);
+  const end = parseISO(b.end_date);
+  if (b.area_done_ha <= 0 || b.total_area_ha <= 0 || today < start) {
+    return { label: `by ${prettyDate(b.end_date)}`, tone: "none" };
+  }
+  const elapsed = Math.max(1, Math.round((today.getTime() - start.getTime()) / msDay));
+  const rate = b.area_done_ha / elapsed; // HA per day
+  const remaining = b.total_area_ha - b.area_done_ha;
+  const etaDays = Math.ceil(remaining / Math.max(rate, 1e-9));
+  const eta = new Date(today.getTime() + etaDays * msDay);
+  const onSchedule = eta.getTime() <= end.getTime();
+  return { label: prettyDate(toISO(eta)), tone: onSchedule ? "ok" : "behind" };
+}
 
 export default function BookPage() {
   const navigate = useNavigate();
@@ -71,12 +96,13 @@ export default function BookPage() {
             <thead>
               <tr>
                 <th>Project</th>
+                <th>Type</th>
                 <th>Dates</th>
                 <th>Drones</th>
                 <th>Total</th>
-                <th>Vendor</th>
                 <th>PIC</th>
                 <th>Progress</th>
+                <th>Est. finish</th>
                 <th></th>
               </tr>
             </thead>
@@ -91,6 +117,9 @@ export default function BookPage() {
                     {b.project_name}
                   </td>
                   <td className="nowrap">
+                    <span className="type-badge">{b.project_type}</span>
+                  </td>
+                  <td className="nowrap">
                     {prettyDate(b.start_date)} → {prettyDate(b.end_date)}
                   </td>
                   <td>
@@ -100,18 +129,27 @@ export default function BookPage() {
                           key={d.id}
                           className="drone-tag mono"
                           style={{ borderColor: colorFor(d.drone_type) }}
-                          title={d.drone_type}
+                          title={`${d.drone_type}${
+                            d.pilots.length ? ` · ${d.pilots.map((p) => p.name).join(", ")}` : ""
+                          }`}
                         >
                           {d.code}
                         </span>
                       ))}
                     </div>
                   </td>
-                  <td className="nowrap">{b.total_drones}× 🚁</td>
-                  <td>{b.vendor_name}</td>
+                  <td className="nowrap" title={`${b.area_done_ha.toFixed(2)} / ${b.total_area_ha.toFixed(2)} HA`}>
+                    {b.total_drones}× 🚁
+                  </td>
                   <td>{b.pic}</td>
                   <td style={{ minWidth: 120 }}>
                     <ProgressBar value={b.progress} />
+                  </td>
+                  <td className="nowrap">
+                    {(() => {
+                      const e = estimateFinish(b);
+                      return <span className={`est est--${e.tone}`}>{e.label}</span>;
+                    })()}
                   </td>
                   <td className="nowrap">
                     <button

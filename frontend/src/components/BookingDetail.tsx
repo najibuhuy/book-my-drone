@@ -49,6 +49,8 @@ export default function BookingDetail({ date, bookings, onDeleted }: Props) {
               <div>
                 <h3 className="booking-card-title">{b.project_name}</h3>
                 <p className="booking-card-sub">
+                  <span className="type-badge">{b.project_type}</span>
+                  {" · "}
                   {b.total_drones} drone{b.total_drones === 1 ? "" : "s"}
                 </p>
               </div>
@@ -63,7 +65,7 @@ export default function BookingDetail({ date, bookings, onDeleted }: Props) {
                   key={d.id}
                   className="drone-tag mono"
                   style={{ borderColor: colorFor(d.drone_type) }}
-                  title={`${d.drone_type} · ${d.status} · ${d.area_done_ha.toFixed(1)} HA done${
+                  title={`${d.drone_type} · ${d.status} · ${d.area_done_ha.toFixed(2)} HA done${
                     d.pilots.length ? ` · pilots: ${d.pilots.map((p) => p.name).join(", ")}` : ""
                   }`}
                 >
@@ -82,7 +84,7 @@ export default function BookingDetail({ date, bookings, onDeleted }: Props) {
               <div>
                 <dt>Area</dt>
                 <dd>
-                  {b.area_done_ha.toFixed(1)} / {b.total_area_ha.toFixed(1)} HA
+                  {b.area_done_ha.toFixed(2)} / {b.total_area_ha.toFixed(2)} HA
                 </dd>
               </div>
               <div>

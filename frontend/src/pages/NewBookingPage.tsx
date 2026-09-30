@@ -1,17 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
-import type { Availability, BookedDrone, BookingInput, DailyProgress, Pilot } from "../types";
+import type {
+  Availability,
+  BookedDrone,
+  BookingInput,
+  DailyProgress,
+  Pilot,
+  ProjectType,
+} from "../types";
+import { PROJECT_TYPES } from "../types";
 import { toISO } from "../lib/date";
 import { colorFor, progressColor } from "../lib/color";
 
 const emptyForm = (): BookingInput => ({
   project_name: "",
+  project_type: "Foliar",
   start_date: toISO(new Date()),
   end_date: toISO(new Date()),
   vendor_name: "",
   description: "",
-  total_area_ha: 0,
+  area_to_cover_ha: 0,
+  qty_rotation: 1,
   pic: "",
   drone_ids: [],
 });
@@ -65,11 +75,13 @@ export default function NewBookingPage() {
       .then((b) => {
         setForm({
           project_name: b.project_name,
+          project_type: b.project_type,
           start_date: b.start_date,
           end_date: b.end_date,
           vendor_name: b.vendor_name,
           description: b.description,
-          total_area_ha: b.total_area_ha,
+          area_to_cover_ha: b.area_to_cover_ha,
+          qty_rotation: b.qty_rotation,
           pic: b.pic,
           drone_ids: b.drones.map((d) => d.id),
         });
@@ -123,10 +135,15 @@ export default function NewBookingPage() {
     () => dailyEntries.reduce((s, e) => s + (Number(e.area_ha) || 0), 0),
     [dailyEntries],
   );
+  // Total area (progress denominator) = area to cover × rotation.
+  const totalArea = useMemo(
+    () => form.area_to_cover_ha * Math.max(1, form.qty_rotation),
+    [form.area_to_cover_ha, form.qty_rotation],
+  );
   const progressPct = useMemo(() => {
-    if (!form.total_area_ha || form.total_area_ha <= 0) return 0;
-    return Math.min(100, Math.round((areaDone / form.total_area_ha) * 100));
-  }, [areaDone, form.total_area_ha]);
+    if (!totalArea || totalArea <= 0) return 0;
+    return Math.min(100, Math.round((areaDone / totalArea) * 100));
+  }, [areaDone, totalArea]);
 
   function set<K extends keyof BookingInput>(key: K, value: BookingInput[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -270,6 +287,28 @@ export default function NewBookingPage() {
           </label>
 
           <label className="field">
+            <span className="field-label">Project type</span>
+            <select
+              value={form.project_type}
+              onChange={(e) => {
+                const pt = e.target.value as ProjectType;
+                // Rotation only applies to Oryctes; reset to 1 otherwise.
+                setForm((f) => ({
+                  ...f,
+                  project_type: pt,
+                  qty_rotation: pt === "Oryctes" ? Math.max(1, f.qty_rotation) : 1,
+                }));
+              }}
+            >
+              {PROJECT_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
             <span className="field-label">Vendor / booked by</span>
             <input
               type="text"
@@ -313,16 +352,46 @@ export default function NewBookingPage() {
           </label>
 
           <label className="field">
-            <span className="field-label">Total area to cover (HA)</span>
+            <span className="field-label">Area to cover (HA)</span>
             <input
               type="number"
               min={0}
-              step={0.1}
-              value={form.total_area_ha}
-              onChange={(e) => set("total_area_ha", Math.max(0, Number(e.target.value) || 0))}
+              step={0.01}
+              value={form.area_to_cover_ha}
+              onChange={(e) =>
+                set("area_to_cover_ha", Math.max(0, Number(e.target.value) || 0))
+              }
               placeholder="e.g. 50"
             />
           </label>
+
+          {form.project_type === "Oryctes" && (
+            <label className="field">
+              <span className="field-label">Qty rotation</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={form.qty_rotation}
+                onChange={(e) =>
+                  set("qty_rotation", Math.max(1, Math.floor(Number(e.target.value) || 1)))
+                }
+              />
+            </label>
+          )}
+
+          <div className="field">
+            <span className="field-label">Total area to cover (HA)</span>
+            <div className="derived-total">
+              {totalArea.toFixed(2)} HA
+              {form.project_type === "Oryctes" && (
+                <span className="muted-note">
+                  {" "}
+                  = {form.area_to_cover_ha.toFixed(2)} × {form.qty_rotation}
+                </span>
+              )}
+            </div>
+          </div>
 
           {/* Pick specific drones: choose a type, then a drone */}
           <div className="field field--full">
@@ -422,7 +491,7 @@ export default function NewBookingPage() {
           <div className="lines-header">
             <h2 className="section-title">Daily progress</h2>
             <span className="muted-note">
-              {areaDone.toFixed(1)} / {form.total_area_ha.toFixed(1)} HA
+              {areaDone.toFixed(2)} / {totalArea.toFixed(2)} HA
             </span>
           </div>
           <div className="progress" style={{ marginBottom: 14 }}>
@@ -445,7 +514,7 @@ export default function NewBookingPage() {
             <input
               type="number"
               min={0}
-              step={0.1}
+              step={0.01}
               value={dpArea}
               onChange={(e) => setDpArea(Math.max(0, Number(e.target.value) || 0))}
               placeholder="Area (HA)"
@@ -474,7 +543,7 @@ export default function NewBookingPage() {
                     <tr key={e.id}>
                       <td className="nowrap">{e.entry_date}</td>
                       <td className="mono">{e.code}</td>
-                      <td>{e.area_ha.toFixed(1)}</td>
+                      <td>{e.area_ha.toFixed(2)}</td>
                       <td className="nowrap">
                         <button className="btn btn--danger btn--sm" onClick={() => removeDaily(e.id)}>
                           Delete

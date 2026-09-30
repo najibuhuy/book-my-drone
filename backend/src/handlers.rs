@@ -278,7 +278,7 @@ pub async fn availability(
 // Bookings
 // ---------------------------------------------------------------------------
 
-const BOOKING_COLUMNS: &str = "id, project_name, start_date, end_date, vendor_name, description, total_area_ha, pic, created_at, updated_at";
+const BOOKING_COLUMNS: &str = "id, project_name, project_type, start_date, end_date, vendor_name, description, area_to_cover_ha, qty_rotation, pic, created_at, updated_at";
 
 const BOOKED_DRONE_SELECT: &str = "SELECT bdu.booking_id, d.id, d.code, d.drone_type, d.status,
         COALESCE((SELECT SUM(dp.area_ha) FROM drone_daily_progress dp
@@ -363,16 +363,19 @@ pub async fn create_booking(
     let mut tx = state.pool.begin().await?;
     let base = sqlx::query_as::<_, BookingBase>(&format!(
         "INSERT INTO bookings
-            (project_name, start_date, end_date, vendor_name, description, total_area_ha, pic)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (project_name, project_type, start_date, end_date, vendor_name, description,
+             area_to_cover_ha, qty_rotation, pic)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING {BOOKING_COLUMNS}"
     ))
     .bind(input.project_name.trim())
+    .bind(input.project_type.trim())
     .bind(input.start_date)
     .bind(input.end_date)
     .bind(input.vendor_name.trim())
     .bind(input.description.trim())
-    .bind(input.total_area_ha)
+    .bind(input.area_to_cover_ha)
+    .bind(input.qty_rotation)
     .bind(input.pic.trim())
     .fetch_one(&mut *tx)
     .await?;
@@ -395,18 +398,21 @@ pub async fn update_booking(
     let mut tx = state.pool.begin().await?;
     let base = sqlx::query_as::<_, BookingBase>(&format!(
         "UPDATE bookings SET
-            project_name = $2, start_date = $3, end_date = $4, vendor_name = $5,
-            description = $6, total_area_ha = $7, pic = $8, updated_at = now()
+            project_name = $2, project_type = $3, start_date = $4, end_date = $5,
+            vendor_name = $6, description = $7, area_to_cover_ha = $8, qty_rotation = $9,
+            pic = $10, updated_at = now()
          WHERE id = $1
          RETURNING {BOOKING_COLUMNS}"
     ))
     .bind(id)
     .bind(input.project_name.trim())
+    .bind(input.project_type.trim())
     .bind(input.start_date)
     .bind(input.end_date)
     .bind(input.vendor_name.trim())
     .bind(input.description.trim())
-    .bind(input.total_area_ha)
+    .bind(input.area_to_cover_ha)
+    .bind(input.qty_rotation)
     .bind(input.pic.trim())
     .fetch_one(&mut *tx)
     .await?;

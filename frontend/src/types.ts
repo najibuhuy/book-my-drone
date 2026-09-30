@@ -25,14 +25,34 @@ export interface BookedDrone {
   pilots: AssignedPilot[];
 }
 
+export type ProjectType =
+  | "Bagworm"
+  | "Foliar"
+  | "Oryctes"
+  | "Fertilizer"
+  | "Forestry"
+  | "Trial";
+
+export const PROJECT_TYPES: ProjectType[] = [
+  "Bagworm",
+  "Foliar",
+  "Oryctes",
+  "Fertilizer",
+  "Forestry",
+  "Trial",
+];
+
 export interface Booking {
   id: string;
   project_name: string;
+  project_type: ProjectType;
   start_date: string; // YYYY-MM-DD
   end_date: string; // YYYY-MM-DD
   vendor_name: string;
   description: string;
-  total_area_ha: number;
+  area_to_cover_ha: number;
+  qty_rotation: number;
+  total_area_ha: number; // derived = area_to_cover_ha × qty_rotation
   area_done_ha: number;
   progress: number; // derived 0..100
   pic: string;
@@ -44,11 +64,13 @@ export interface Booking {
 
 export interface BookingInput {
   project_name: string;
+  project_type: ProjectType;
   start_date: string;
   end_date: string;
   vendor_name: string;
   description: string;
-  total_area_ha: number;
+  area_to_cover_ha: number;
+  qty_rotation: number;
   pic: string;
   drone_ids: number[];
 }
