@@ -6,7 +6,7 @@ calendar of what's booked and create bookings with all the project details.
 > 📄 Design docs live in [`docs/`](docs/): [PRD](docs/PRD.md) ·
 > [Architecture](docs/ARCHITECTURE.md).
 
-Four pages:
+Five pages:
 
 - **Home** — a month calendar, **filterable by drone type and unique code**.
   Click any day to see the bookings on that date (project, vendor, PIC, dates,
@@ -27,6 +27,10 @@ Four pages:
   each with a unique code** (e.g. `MAV-001`), with an "in use / free today"
   snapshot per type. Each drone has a **Status** (Standby / Operational /
   Incomplete).
+- **Summary** — pick a **date range** and track performance **by drone** (HA
+  done, projects, pilots, flying days, fails), **by project** (progress at the
+  start → end of the range, pilots on duty, drones used), and **by pilot** (HA
+  flown, drones used, projects).
 - **Pilots** — manage pilots, and assign **one or more pilots to each drone
   inside a booking** (project-scoped); each drone keeps a **pilot history across
   projects**.
@@ -105,7 +109,7 @@ The frontend proxy target can be overridden with `VITE_API_TARGET`.
 | `PUT`    | `/api/bookings/:id`    | Update a booking (diffs its units; keeps daily logs; can "boost") |
 | `DELETE` | `/api/bookings/:id`    | Delete a booking                             |
 | `GET`    | `/api/bookings/:id/daily-progress` | List a booking's per-drone daily progress |
-| `POST`   | `/api/bookings/:id/daily-progress` | Upsert a daily log (`drone_id`, `entry_date`, `area_ha`) |
+| `POST`   | `/api/bookings/:id/daily-progress` | Upsert a daily log (`drone_id`, `entry_date`, `area_ha`, optional `pilot_id`, optional `fail_reason`) |
 | `DELETE` | `/api/daily-progress/:id` | Delete a daily-progress row               |
 | `GET`    | `/api/drone-types`     | List types with `total_units` + today's usage |
 | `POST`   | `/api/drone-types`     | Add a drone type (`name`)                    |
@@ -121,6 +125,7 @@ The frontend proxy target can be overridden with `VITE_API_TARGET`.
 | `POST`   | `/api/bookings/:id/drone-pilots` | Assign a pilot to a drone in this booking (`drone_id`, `pilot_id`) |
 | `DELETE` | `/api/booking-drone-pilots/:id` | Unassign a pilot (by assignment id)   |
 | `GET`    | `/api/drones/:id/pilot-history` | A drone's pilots across projects (with dates) |
+| `GET`    | `/api/summary?start=&end=` | Daily logs + active projects in a date range (Summary page) |
 | `GET`    | `/api/availability`    | Per-unit availability for `?start=&end=&exclude=` |
 | `GET`    | `/api/stats`           | Drones booked per type (dashboard chart)     |
 

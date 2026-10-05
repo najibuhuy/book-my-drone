@@ -106,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/drones/{id}/pilot-history",
             get(handlers::drone_pilot_history),
         )
+        .route("/api/summary", get(handlers::summary))
         .route("/api/stats", get(handlers::stats))
         .with_state(state)
         .layer(cors)

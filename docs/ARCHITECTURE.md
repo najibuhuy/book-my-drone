@@ -191,6 +191,7 @@ Applied in order at startup by `sqlx::migrate!`:
 | `0006_area_progress_pilots.sql` | bookings.total_area_ha (+drop progress); drones.status; drone_daily_progress; pilots + drone_pilot_assignments |
 | `0007_project_pilots.sql` | replace standalone drone_pilot_assignments with project-scoped booking_drone_pilots (multi-pilot per drone per booking) |
 | `0008_project_type_rotation.sql` | rename bookings.total_area_ha → area_to_cover_ha; add qty_rotation (CHECK ≥ 1, default 1) and project_type (CHECK in the six types, default Foliar) |
+| `0009_daily_pilot_fail.sql` | drone_daily_progress gains `pilot_id` (→ pilots, RESTRICT; must be a pilot assigned to that drone on the booking, checked by the API) and `fail_reason` (CHECK Cuaca / Drone Issue / Crash / Genset Issue / Access Issue / Estate Issue); back-fills pilot_id where a drone had exactly one pilot |
 
 ## 5. API reference
 
@@ -205,7 +206,7 @@ Base path `/api`. All bodies are JSON.
 | PUT | `/bookings/{id}` | Update a booking (diffs its reserved units — kept units keep their daily logs; can add a drone to "boost") |
 | DELETE | `/bookings/{id}` | Delete a booking (frees its units) |
 | GET | `/bookings/{id}/daily-progress` | List a booking's per-drone daily progress rows |
-| POST | `/bookings/{id}/daily-progress` | Upsert a daily log `{drone_id, entry_date, area_ha}` (ON CONFLICT) |
+| POST | `/bookings/{id}/daily-progress` | Upsert a daily log `{drone_id, entry_date, area_ha, pilot_id?, fail_reason?}` (ON CONFLICT); 409 if the pilot isn't assigned to that drone on the booking |
 | DELETE | `/daily-progress/{id}` | Delete a daily-progress row |
 | GET | `/drone-types` | List types with `total_units` + `booked_today` |
 | POST | `/drone-types` | Create a type (`name`); 409 on duplicate |
@@ -221,6 +222,7 @@ Base path `/api`. All bodies are JSON.
 | POST | `/bookings/{id}/drone-pilots` | Assign a pilot to a drone in this booking `{drone_id, pilot_id}`; 409 on duplicate or if the drone isn't in the booking |
 | DELETE | `/booking-drone-pilots/{id}` | Unassign a pilot (by assignment id) |
 | GET | `/drones/{id}/pilot-history` | The drone's pilots across projects `[{id, booking_id, project_name, pilot_id, pilot_name, start_date, end_date}]` (dates from each booking) |
+| GET | `/summary?start=&end=` | `{entries, projects}`: every daily log in the range (with drone, project, pilot, fail reason) plus projects active in the range with `total_area_ha`, `area_before_ha`, `area_in_range_ha` — the Summary page groups these by drone / project / pilot |
 | GET | `/availability?start=&end=&exclude=` | Per-unit availability for a window |
 | GET | `/stats` | Drones booked per type (dashboard chart) |
 

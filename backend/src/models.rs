@@ -273,13 +273,31 @@ pub struct DailyProgress {
     pub code: String,
     pub entry_date: NaiveDate,
     pub area_ha: f64,
+    pub pilot_id: Option<i32>,
+    pub pilot_name: Option<String>,
+    pub fail_reason: Option<String>,
 }
+
+pub const FAIL_REASONS: [&str; 6] = [
+    "Cuaca",
+    "Drone Issue",
+    "Crash",
+    "Genset Issue",
+    "Access Issue",
+    "Estate Issue",
+];
 
 #[derive(Debug, Deserialize)]
 pub struct DailyProgressInput {
     pub drone_id: i32,
     pub entry_date: NaiveDate,
     pub area_ha: f64,
+    /// Pilot who flew this log (must be assigned to the drone on this booking).
+    #[serde(default)]
+    pub pilot_id: Option<i32>,
+    /// Set when the drone couldn't fly; one of FAIL_REASONS.
+    #[serde(default)]
+    pub fail_reason: Option<String>,
 }
 
 impl DailyProgressInput {
@@ -287,8 +305,54 @@ impl DailyProgressInput {
         if self.area_ha < 0.0 {
             return Err("area_ha cannot be negative".into());
         }
+        if let Some(r) = &self.fail_reason {
+            if !FAIL_REASONS.contains(&r.as_str()) {
+                return Err("fail_reason is not one of the allowed values".into());
+            }
+        }
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Performance summary (for a date range)
+// ---------------------------------------------------------------------------
+
+/// One daily log in the range, with everything needed to group it by drone,
+/// project, or pilot.
+#[derive(Debug, Serialize, FromRow)]
+pub struct SummaryEntry {
+    pub entry_date: NaiveDate,
+    pub area_ha: f64,
+    pub fail_reason: Option<String>,
+    pub booking_id: Uuid,
+    pub project_name: String,
+    pub project_type: String,
+    pub drone_id: i32,
+    pub drone_code: String,
+    pub drone_type: String,
+    pub pilot_id: Option<i32>,
+    pub pilot_name: Option<String>,
+}
+
+/// A project active in the range, with area done before / during the range so
+/// progress at the start and end of the range can be computed.
+#[derive(Debug, Serialize, FromRow)]
+pub struct SummaryProject {
+    pub booking_id: Uuid,
+    pub project_name: String,
+    pub project_type: String,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
+    pub total_area_ha: f64,
+    pub area_before_ha: f64,
+    pub area_in_range_ha: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Summary {
+    pub entries: Vec<SummaryEntry>,
+    pub projects: Vec<SummaryProject>,
 }
 
 // ---------------------------------------------------------------------------

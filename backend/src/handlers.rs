@@ -12,7 +12,7 @@ use crate::models::{
     group_booked, group_pilots, AssignedPilot, AssignedPilotRow, Availability, BookedDrone,
     BookedDroneRow, Booking, BookingBase, BookingInput, DailyProgress, DailyProgressInput, Drone,
     DroneInput, DronePilotHistory, DronePilotInput, DroneType, DroneTypeInput, DroneTypeStat, Pilot,
-    PilotInput,
+    PilotInput, Summary, SummaryEntry, SummaryProject,
 };
 use crate::AppState;
 
@@ -450,16 +450,19 @@ pub async fn delete_booking(
 // Daily progress (per drone per day)
 // ---------------------------------------------------------------------------
 
+const DAILY_SELECT: &str = "SELECT dp.id, dp.drone_id, d.code, dp.entry_date, dp.area_ha,
+        dp.pilot_id, p.name AS pilot_name, dp.fail_reason
+     FROM drone_daily_progress dp
+     JOIN drones d ON d.id = dp.drone_id
+     LEFT JOIN pilots p ON p.id = dp.pilot_id";
+
 pub async fn list_daily_progress(
     State(state): State<AppState>,
     Path(booking_id): Path<Uuid>,
 ) -> Result<Json<Vec<DailyProgress>>, AppError> {
-    let rows = sqlx::query_as::<_, DailyProgress>(
-        "SELECT dp.id, dp.drone_id, d.code, dp.entry_date, dp.area_ha
-         FROM drone_daily_progress dp JOIN drones d ON d.id = dp.drone_id
-         WHERE dp.booking_id = $1
-         ORDER BY dp.entry_date, d.code",
-    )
+    let rows = sqlx::query_as::<_, DailyProgress>(&format!(
+        "{DAILY_SELECT} WHERE dp.booking_id = $1 ORDER BY dp.entry_date, d.code"
+    ))
     .bind(booking_id)
     .fetch_all(&state.pool)
     .await?;
@@ -472,16 +475,41 @@ pub async fn upsert_daily_progress(
     Json(input): Json<DailyProgressInput>,
 ) -> Result<(StatusCode, Json<DailyProgress>), AppError> {
     input.validate().map_err(AppError::Validation)?;
+
+    // The pilot (if given) must be one assigned to this drone on this booking.
+    if let Some(pilot_id) = input.pilot_id {
+        let assigned: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM booking_drone_pilots
+                            WHERE booking_id = $1 AND drone_id = $2 AND pilot_id = $3)",
+        )
+        .bind(booking_id)
+        .bind(input.drone_id)
+        .bind(pilot_id)
+        .fetch_one(&state.pool)
+        .await?;
+        if !assigned {
+            return Err(AppError::Conflict(
+                "That pilot isn't assigned to this drone for this project.".into(),
+            ));
+        }
+    }
+
     let id: i32 = match sqlx::query_scalar(
-        "INSERT INTO drone_daily_progress (booking_id, drone_id, entry_date, area_ha)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (booking_id, drone_id, entry_date) DO UPDATE SET area_ha = EXCLUDED.area_ha
+        "INSERT INTO drone_daily_progress
+            (booking_id, drone_id, entry_date, area_ha, pilot_id, fail_reason)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (booking_id, drone_id, entry_date) DO UPDATE
+            SET area_ha = EXCLUDED.area_ha,
+                pilot_id = EXCLUDED.pilot_id,
+                fail_reason = EXCLUDED.fail_reason
          RETURNING id",
     )
     .bind(booking_id)
     .bind(input.drone_id)
     .bind(input.entry_date)
     .bind(input.area_ha)
+    .bind(input.pilot_id)
+    .bind(&input.fail_reason)
     .fetch_one(&state.pool)
     .await
     {
@@ -493,15 +521,71 @@ pub async fn upsert_daily_progress(
         }
         Err(e) => return Err(e.into()),
     };
-    let row = sqlx::query_as::<_, DailyProgress>(
-        "SELECT dp.id, dp.drone_id, d.code, dp.entry_date, dp.area_ha
-         FROM drone_daily_progress dp JOIN drones d ON d.id = dp.drone_id
-         WHERE dp.id = $1",
-    )
-    .bind(id)
-    .fetch_one(&state.pool)
-    .await?;
+    let row = sqlx::query_as::<_, DailyProgress>(&format!("{DAILY_SELECT} WHERE dp.id = $1"))
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?;
     Ok((StatusCode::CREATED, Json(row)))
+}
+
+// ---------------------------------------------------------------------------
+// Performance summary for a date range
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct SummaryQuery {
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+}
+
+/// Every daily log in [start, end] (with drone / project / pilot attached) plus
+/// the projects active in the range, so the client can group performance by
+/// drone, project, or pilot.
+pub async fn summary(
+    State(state): State<AppState>,
+    Query(q): Query<SummaryQuery>,
+) -> Result<Json<Summary>, AppError> {
+    if q.end < q.start {
+        return Err(AppError::Validation("end must be on or after start".into()));
+    }
+    let entries = sqlx::query_as::<_, SummaryEntry>(
+        "SELECT dp.entry_date, dp.area_ha, dp.fail_reason,
+                b.id AS booking_id, b.project_name, b.project_type,
+                d.id AS drone_id, d.code AS drone_code, d.drone_type,
+                p.id AS pilot_id, p.name AS pilot_name
+         FROM drone_daily_progress dp
+         JOIN bookings b ON b.id = dp.booking_id
+         JOIN drones d ON d.id = dp.drone_id
+         LEFT JOIN pilots p ON p.id = dp.pilot_id
+         WHERE dp.entry_date BETWEEN $1 AND $2
+         ORDER BY dp.entry_date, b.project_name, d.code",
+    )
+    .bind(q.start)
+    .bind(q.end)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let projects = sqlx::query_as::<_, SummaryProject>(
+        "SELECT b.id AS booking_id, b.project_name, b.project_type, b.start_date, b.end_date,
+                (b.area_to_cover_ha * b.qty_rotation)::double precision AS total_area_ha,
+                COALESCE((SELECT SUM(dp.area_ha) FROM drone_daily_progress dp
+                          WHERE dp.booking_id = b.id AND dp.entry_date < $1), 0)::double precision
+                    AS area_before_ha,
+                COALESCE((SELECT SUM(dp.area_ha) FROM drone_daily_progress dp
+                          WHERE dp.booking_id = b.id AND dp.entry_date BETWEEN $1 AND $2), 0)::double precision
+                    AS area_in_range_ha
+         FROM bookings b
+         WHERE (b.start_date <= $2 AND b.end_date >= $1)
+            OR EXISTS (SELECT 1 FROM drone_daily_progress dp
+                       WHERE dp.booking_id = b.id AND dp.entry_date BETWEEN $1 AND $2)
+         ORDER BY b.start_date, b.project_name",
+    )
+    .bind(q.start)
+    .bind(q.end)
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(Summary { entries, projects }))
 }
 
 pub async fn delete_daily_progress(

@@ -953,3 +953,112 @@ body {
   background: #fef3c7;
   color: #92400e;
 }
+
+/* ---------- Daily progress: fail reason ---------- */
+.fail-select--on {
+  border-color: #fca5a5 !important;
+  background: #fef2f2 !important;
+  color: #991b1b;
+}
+.fail-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #fee2e2;
+  color: #991b1b;
+}
+.table tbody tr.row-fail {
+  background: #fff7f7;
+}
+
+/* ---------- Summary page ---------- */
+.range-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.range-bar input[type="date"] {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+}
+.range-presets {
+  display: flex;
+  gap: 6px;
+}
+.range-presets .btn--sm {
+  margin-left: 0;
+}
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+@media (max-width: 700px) {
+  .kpi-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+}
+.kpi-num {
+  display: block;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.kpi-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.kpi--warn .kpi-num {
+  color: #991b1b;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.tab {
+  border: none;
+  background: none;
+  padding: 9px 14px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab--on {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+.table td.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.delta {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.delta--up {
+  color: #166534;
+}

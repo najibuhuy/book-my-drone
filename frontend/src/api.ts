@@ -4,12 +4,14 @@ import type {
   Booking,
   BookingInput,
   DailyProgress,
+  DailyProgressInput,
   Drone,
   DronePilotHistory,
   DroneStatus,
   DroneType,
   DroneTypeStat,
   Pilot,
+  Summary,
 } from "./types";
 
 const BASE = "/api";
@@ -54,7 +56,7 @@ export const api = {
     request<DailyProgress[]>(`/bookings/${bookingId}/daily-progress`),
   saveDailyProgress: (
     bookingId: string,
-    entry: { drone_id: number; entry_date: string; area_ha: number },
+    entry: DailyProgressInput,
   ) =>
     request<DailyProgress>(`/bookings/${bookingId}/daily-progress`, {
       method: "POST",
@@ -110,6 +112,10 @@ export const api = {
   // A drone's pilot history (derived from the projects it flew)
   dronePilotHistory: (droneId: number) =>
     request<DronePilotHistory[]>(`/drones/${droneId}/pilot-history`),
+
+  // Performance summary for a date range
+  summary: (start: string, end: string) =>
+    request<Summary>(`/summary?${new URLSearchParams({ start, end }).toString()}`),
 
   // Stats
   stats: () => request<DroneTypeStat[]>("/stats"),

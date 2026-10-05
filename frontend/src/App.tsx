@@ -21,6 +21,9 @@ export default function App() {
           <NavLink to="/pilots" className="nav-link">
             Pilots
           </NavLink>
+          <NavLink to="/summary" className="nav-link">
+            Summary
+          </NavLink>
           <NavLink to="/book/new" className="nav-link nav-link--cta">
             + New Booking
           </NavLink>

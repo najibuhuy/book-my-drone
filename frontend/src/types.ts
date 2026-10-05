@@ -96,12 +96,72 @@ export interface Availability {
 }
 
 /** A per-drone daily area log within a booking. */
+export type FailReason =
+  | "Cuaca"
+  | "Drone Issue"
+  | "Crash"
+  | "Genset Issue"
+  | "Access Issue"
+  | "Estate Issue";
+
+export const FAIL_REASONS: FailReason[] = [
+  "Cuaca",
+  "Drone Issue",
+  "Crash",
+  "Genset Issue",
+  "Access Issue",
+  "Estate Issue",
+];
+
 export interface DailyProgress {
   id: number;
   drone_id: number;
   code: string;
   entry_date: string; // YYYY-MM-DD
   area_ha: number;
+  pilot_id: number | null;
+  pilot_name: string | null;
+  fail_reason: FailReason | null;
+}
+
+export interface DailyProgressInput {
+  drone_id: number;
+  entry_date: string;
+  area_ha: number;
+  pilot_id: number | null;
+  fail_reason: FailReason | null;
+}
+
+/** One daily log within a summary range. */
+export interface SummaryEntry {
+  entry_date: string;
+  area_ha: number;
+  fail_reason: FailReason | null;
+  booking_id: string;
+  project_name: string;
+  project_type: ProjectType;
+  drone_id: number;
+  drone_code: string;
+  drone_type: string;
+  pilot_id: number | null;
+  pilot_name: string | null;
+}
+
+/** A project active in a summary range (area before / during the range). */
+export interface SummaryProject {
+  booking_id: string;
+  project_name: string;
+  project_type: ProjectType;
+  start_date: string;
+  end_date: string;
+  total_area_ha: number;
+  area_before_ha: number;
+  area_in_range_ha: number;
+}
+
+export interface Summary {
+  entries: SummaryEntry[];
+  projects: SummaryProject[];
 }
 
 export interface Pilot {

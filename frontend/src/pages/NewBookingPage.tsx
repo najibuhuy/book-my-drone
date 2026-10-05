@@ -9,7 +9,8 @@ import type {
   Pilot,
   ProjectType,
 } from "../types";
-import { PROJECT_TYPES } from "../types";
+import { FAIL_REASONS, PROJECT_TYPES } from "../types";
+import type { FailReason } from "../types";
 import { toISO } from "../lib/date";
 import { colorFor, progressColor } from "../lib/color";
 
@@ -47,6 +48,8 @@ export default function NewBookingPage() {
   const [dpDrone, setDpDrone] = useState("");
   const [dpDate, setDpDate] = useState(() => toISO(new Date()));
   const [dpArea, setDpArea] = useState<number>(0);
+  const [dpPilot, setDpPilot] = useState(""); // pilot id who flew it
+  const [dpFail, setDpFail] = useState<FailReason | "">(""); // why it didn't fly
 
   // Edit-mode: pilots to assign per drone (project-scoped).
   const [allPilots, setAllPilots] = useState<Pilot[]>([]);
@@ -163,6 +166,26 @@ export default function NewBookingPage() {
     setPickDroneId("");
   }
 
+  // Pilots assigned to the drone currently picked in the daily-log form.
+  const dpDronePilots = useMemo(
+    () => bookedDrones.find((d) => String(d.id) === dpDrone)?.pilots ?? [],
+    [bookedDrones, dpDrone],
+  );
+
+  // Keep the pilot choice valid for the chosen drone; default to its only pilot.
+  useEffect(() => {
+    if (dpPilot && dpDronePilots.some((p) => String(p.pilot_id) === dpPilot)) return;
+    setDpPilot(dpDronePilots.length === 1 ? String(dpDronePilots[0].pilot_id) : "");
+  }, [dpDronePilots, dpPilot]);
+
+  function editDaily(entry: DailyProgress) {
+    setDpDrone(String(entry.drone_id));
+    setDpDate(entry.entry_date);
+    setDpArea(entry.area_ha);
+    setDpPilot(entry.pilot_id ? String(entry.pilot_id) : "");
+    setDpFail(entry.fail_reason ?? "");
+  }
+
   async function saveDaily(e: React.FormEvent) {
     e.preventDefault();
     if (!id) return;
@@ -177,8 +200,11 @@ export default function NewBookingPage() {
         drone_id,
         entry_date: dpDate,
         area_ha: Math.max(0, dpArea),
+        pilot_id: dpPilot ? Number(dpPilot) : null,
+        fail_reason: dpFail || null,
       });
       setDpArea(0);
+      setDpFail("");
       await loadDaily(id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save progress");
@@ -520,8 +546,35 @@ export default function NewBookingPage() {
               placeholder="Area (HA)"
               aria-label="Area in hectares"
             />
+            <select value={dpPilot} onChange={(e) => setDpPilot(e.target.value)} aria-label="Pilot">
+              <option value="">
+                {dpDronePilots.length === 0 ? "No pilot assigned" : "Pilot…"}
+              </option>
+              {dpDronePilots.map((p) => (
+                <option key={p.pilot_id} value={p.pilot_id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={dpFail}
+              onChange={(e) => {
+                const r = e.target.value as FailReason | "";
+                setDpFail(r);
+                if (r) setDpArea(0); // didn't fly → no area by default
+              }}
+              aria-label="Fail reason"
+              className={dpFail ? "fail-select fail-select--on" : "fail-select"}
+            >
+              <option value="">Flew (no fail)</option>
+              {FAIL_REASONS.map((r) => (
+                <option key={r} value={r}>
+                  Fail: {r}
+                </option>
+              ))}
+            </select>
             <button type="submit" className="btn btn--primary">
-              Log
+              Save
             </button>
           </form>
 
@@ -535,16 +588,29 @@ export default function NewBookingPage() {
                     <th>Date</th>
                     <th>Drone</th>
                     <th>Area (HA)</th>
+                    <th>Pilot</th>
+                    <th>Fail</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {dailyEntries.map((e) => (
-                    <tr key={e.id}>
+                    <tr key={e.id} className={e.fail_reason ? "row-fail" : ""}>
                       <td className="nowrap">{e.entry_date}</td>
                       <td className="mono">{e.code}</td>
                       <td>{e.area_ha.toFixed(2)}</td>
+                      <td>{e.pilot_name ?? <span className="muted-note">—</span>}</td>
+                      <td>
+                        {e.fail_reason ? (
+                          <span className="fail-badge">{e.fail_reason}</span>
+                        ) : (
+                          <span className="muted-note">—</span>
+                        )}
+                      </td>
                       <td className="nowrap">
+                        <button className="btn btn--ghost btn--sm" onClick={() => editDaily(e)}>
+                          Edit
+                        </button>
                         <button className="btn btn--danger btn--sm" onClick={() => removeDaily(e.id)}>
                           Delete
                         </button>
